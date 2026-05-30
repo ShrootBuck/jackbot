@@ -51,6 +51,7 @@ def train(config: TrainConfig, resume: Path | None = None) -> None:
             scale = shaping_scale(config, update)
             rollout, batch = collect_rollout(env, model, batch, config, device, scale)
             stats = ppo_update(model, optimizer, rollout, config)
+            del rollout
             global_steps += config.num_envs * config.rollout_len
 
             metrics = {

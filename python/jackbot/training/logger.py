@@ -24,6 +24,7 @@ class RunLogger:
             **metrics,
             "system/ram_mb": psutil.Process().memory_info().rss / (1024 * 1024),
             "throughput/steps_per_sec": step_delta / elapsed,
+            **_accelerator_memory_metrics(),
         }
         self.last_steps = step
         self.last_time = now
@@ -52,3 +53,21 @@ def make_logger(config: TrainConfig) -> RunLogger:
         config=config.to_dict(),
     )
     return RunLogger(run=run, started_at=time.perf_counter())
+
+
+def _accelerator_memory_metrics() -> dict[str, float]:
+    try:
+        import torch
+    except ImportError:
+        return {}
+
+    if not torch.backends.mps.is_available():
+        return {}
+
+    metrics = {
+        "system/mps_allocated_mb": torch.mps.current_allocated_memory() / (1024 * 1024),
+    }
+    driver_allocated = getattr(torch.mps, "driver_allocated_memory", None)
+    if driver_allocated is not None:
+        metrics["system/mps_driver_allocated_mb"] = driver_allocated() / (1024 * 1024)
+    return metrics
