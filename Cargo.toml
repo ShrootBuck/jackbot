@@ -1,4 +1,3 @@
 [workspace]
-members = ["crates/jackbot-engine"]
+members = ["crates/jackbot-engine", "crates/jackbot-py"]
 resolver = "3"
-

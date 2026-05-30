@@ -543,6 +543,22 @@ impl Game {
         })
     }
 
+    pub fn hidden_hand_targets(&self, player: usize) -> Result<[[u8; 52]; 3], GameError> {
+        if player >= NUM_PLAYERS {
+            return Err(GameError::InvalidPlayer(player));
+        }
+
+        let mut targets = [[0; 52]; 3];
+        for (slot, target) in targets.iter_mut().enumerate() {
+            let other_player = (player + slot + 1) % NUM_PLAYERS;
+            for card in &self.hands[other_player] {
+                target[card.id()] = 1;
+            }
+        }
+
+        Ok(targets)
+    }
+
     fn add_enter_actions(
         &self,
         actions: &mut Vec<LegalAction>,
@@ -1963,6 +1979,23 @@ mod tests {
         assert_eq!(obs.hand_sizes[1], game.hands[1].len());
         assert_eq!(obs.deck_remaining, game.deck.len());
         assert!(!obs.own_hand.iter().any(|c| game.hands[1].contains(c)));
+    }
+
+    #[test]
+    fn hidden_hand_targets_are_training_only() {
+        let game = Game::new(42, Rules::canonical_v1());
+
+        let targets = game.hidden_hand_targets(0).unwrap();
+
+        for (slot, target) in targets.iter().enumerate() {
+            let player = slot + 1;
+            for card in &game.hands[player] {
+                assert_eq!(target[card.id()], 1);
+            }
+            for card in &game.hands[0] {
+                assert_eq!(target[card.id()], 0);
+            }
+        }
     }
 
     #[test]

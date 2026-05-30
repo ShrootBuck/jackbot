@@ -1,0 +1,35 @@
+[build-system]
+requires = ["maturin>=1.13,<2"]
+build-backend = "maturin"
+
+[project]
+name = "jackbot"
+version = "0.1.0"
+description = "Self-play PPO training stack for Jackbot"
+readme = "README.md"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "numpy>=2.0",
+    "psutil>=6.0",
+    "torch>=2.5",
+    "wandb>=0.19",
+]
+
+[project.scripts]
+jackbot-train = "jackbot.training.train:main"
+jackbot-eval = "jackbot.training.evaluate:main"
+
+[dependency-groups]
+dev = [
+    "maturin>=1.13",
+    "pytest>=8.0",
+]
+
+[tool.maturin]
+manifest-path = "crates/jackbot-py/Cargo.toml"
+module-name = "jackbot._jackbot"
+python-source = "python"
+features = ["pyo3/extension-module"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

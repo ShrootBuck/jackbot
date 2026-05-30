@@ -90,17 +90,58 @@ like "play 7D, move P1 marble 2 forward 3, then P1 marble 0 forward 4."
 
 ## Later training layer
 
-When the rules are stable, the Python side should use `uv`, PyTorch, and
-Weights & Biases (`wandb`) instead of TensorBoard. W&B should track training
-reward, policy loss, value loss, entropy, win rate by baseline, engine steps/sec,
-GPU/CPU utilization, temperatures when available, RAM usage, and checkpoint
-metadata.
+The Python side uses `uv`, PyTorch, PyO3/maturin, and Weights & Biases (`wandb`)
+instead of TensorBoard. W&B tracks training reward, policy loss, value loss,
+belief loss, entropy, win rate by baseline, engine steps/sec, RAM usage, and
+checkpoint metadata.
+
+Set up the pinned Python 3.12 environment and build the Rust extension:
+
+```bash
+uv sync --group dev
+```
+
+Run the full test suite:
+
+```bash
+cargo test
+uv run pytest
+```
+
+Run the tiny end-to-end smoke trainer:
+
+```bash
+uv run jackbot-train --smoke
+```
+
+Run a real first training job locally:
+
+```bash
+uv run jackbot-train --wandb-mode online
+```
+
+Resume after a crash/reboot:
+
+```bash
+uv run jackbot-train --resume checkpoints/jackbot_latest.pt
+```
+
+Evaluate a checkpoint:
+
+```bash
+uv run jackbot-eval checkpoints/jackbot_best.pt --games 64
+```
 
 The realistic baseline training machine is an old M1 MacBook Pro, not an
 8x-H100 cluster. The strategy should stay the same either way: keep memory
 bounded, stream short rollouts, checkpoint aggressively, and let slower hardware
 run longer. Bigger GPUs should reduce wall-clock time, not require a different
 algorithm or a giant RAM-hungry replay setup.
+
+The V1 trainer is a PPO self-play loop with a feed-forward MLP. The Rust engine
+returns legal observations, legal dynamic actions, both-team rewards, and hidden
+hand targets for the auxiliary belief head. Python never reimplements rules; it
+just scores the legal action list Rust gives it.
 
 Long training runs need explicit checkpointing. The training script should:
 

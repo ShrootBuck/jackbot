@@ -1,0 +1,15 @@
+[package]
+name = "jackbot-py"
+version = "0.1.0"
+edition = "2024"
+description = "Python bindings and batched RL environment for Jackbot"
+license = "MIT"
+
+[lib]
+name = "_jackbot"
+crate-type = ["cdylib", "rlib"]
+path = "src/lib.rs"
+
+[dependencies]
+jackbot-engine = { path = "../jackbot-engine" }
+pyo3 = { version = "0.28.3", features = ["auto-initialize"] }
