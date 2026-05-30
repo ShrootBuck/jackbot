@@ -9,7 +9,7 @@ import torch.nn.functional as F
 from torch import nn
 
 from jackbot.training.config import TrainConfig
-from jackbot.training.env import TensorBatch, to_tensors
+from jackbot.training.env import to_tensors
 from jackbot.training.model import JackbotNet
 
 
@@ -60,7 +60,6 @@ def collect_rollout(
     actions_parts: list[torch.Tensor] = []
     log_prob_parts: list[torch.Tensor] = []
     value_parts: list[torch.Tensor] = []
-    reward_parts: list[torch.Tensor] = []
     team_reward_parts: list[torch.Tensor] = []
     done_parts: list[torch.Tensor] = []
     game_length_parts: list[torch.Tensor] = []
@@ -87,13 +86,20 @@ def collect_rollout(
         actions_parts.append(actions)
         log_prob_parts.append(log_probs)
         value_parts.append(values)
-        reward_parts.append(next_tensors.rewards)
         team_reward_parts.append(next_tensors.team_rewards)
         done_parts.append(next_tensors.dones)
         game_length_parts.append(next_tensors.game_lengths)
         acting_team_parts.append(next_tensors.acting_teams)
 
         batch = next_batch
+
+    final_tensors = to_tensors(batch, device)
+    with torch.no_grad():
+        final_output = model(
+            final_tensors.obs,
+            final_tensors.action_features,
+            final_tensors.action_offsets,
+        )
 
     rollout = _assemble_rollout(
         obs_parts,
@@ -103,12 +109,14 @@ def collect_rollout(
         actions_parts,
         log_prob_parts,
         value_parts,
-        reward_parts,
         team_reward_parts,
         done_parts,
         game_length_parts,
         acting_team_parts,
+        final_output.values,
+        torch.remainder(final_tensors.current_players, 2),
         config.gamma,
+        config.gae_lambda,
     )
     return rollout, batch
 
@@ -198,12 +206,14 @@ def _assemble_rollout(
     actions_parts: list[torch.Tensor],
     log_prob_parts: list[torch.Tensor],
     value_parts: list[torch.Tensor],
-    reward_parts: list[torch.Tensor],
     team_reward_parts: list[torch.Tensor],
     done_parts: list[torch.Tensor],
     game_length_parts: list[torch.Tensor],
     acting_team_parts: list[torch.Tensor],
+    bootstrap_values: torch.Tensor,
+    bootstrap_acting_teams: torch.Tensor,
     gamma: float,
+    gae_lambda: float,
 ) -> Rollout:
     env_count = obs_parts[0].shape[0]
     device = obs_parts[0].device
@@ -217,8 +227,19 @@ def _assemble_rollout(
     game_lengths = torch.stack(game_length_parts, dim=0)
     acting_teams = torch.stack(acting_team_parts, dim=0)
 
-    returns = _team_returns(team_rewards, dones, acting_teams, gamma).reshape(-1)
-    advantages = returns - old_values
+    values = torch.stack(value_parts, dim=0)
+    returns, advantages = _team_gae_returns(
+        team_rewards,
+        dones,
+        acting_teams,
+        values,
+        bootstrap_values,
+        bootstrap_acting_teams,
+        gamma,
+        gae_lambda,
+    )
+    returns = returns.reshape(-1)
+    advantages = advantages.reshape(-1)
     advantages = (advantages - advantages.mean()) / advantages.std().clamp_min(1e-6)
 
     action_features, action_offsets = _concat_action_segments(action_feature_parts, offset_parts)
@@ -244,20 +265,40 @@ def _assemble_rollout(
     )
 
 
-def _team_returns(
+def _team_gae_returns(
     team_rewards: torch.Tensor,
     dones: torch.Tensor,
     acting_teams: torch.Tensor,
+    values: torch.Tensor,
+    bootstrap_values: torch.Tensor,
+    bootstrap_acting_teams: torch.Tensor,
     gamma: float,
-) -> torch.Tensor:
+    gae_lambda: float,
+) -> tuple[torch.Tensor, torch.Tensor]:
     steps, envs, _ = team_rewards.shape
-    future = torch.zeros(envs, 2, device=team_rewards.device)
-    returns = torch.zeros(steps, envs, device=team_rewards.device)
+    next_values_by_team = _signed_team_values(bootstrap_values, bootstrap_acting_teams)
+    gae = torch.zeros(envs, 2, device=team_rewards.device)
+    advantages_by_team = torch.zeros(steps, envs, 2, device=team_rewards.device)
+    values_by_team = _signed_team_values(values, acting_teams)
+
     for step in range(steps - 1, -1, -1):
         keep_future = (~dones[step]).float().unsqueeze(-1)
-        future = team_rewards[step] + gamma * future * keep_future
-        returns[step] = future.gather(1, acting_teams[step].unsqueeze(-1)).squeeze(-1)
-    return returns
+        delta = team_rewards[step] + gamma * next_values_by_team * keep_future - values_by_team[step]
+        gae = delta + gamma * gae_lambda * keep_future * gae
+        advantages_by_team[step] = gae
+        next_values_by_team = values_by_team[step]
+
+    advantages = advantages_by_team.gather(2, acting_teams.unsqueeze(-1)).squeeze(-1)
+    returns = advantages + values
+    return returns, advantages
+
+
+def _signed_team_values(values: torch.Tensor, acting_teams: torch.Tensor) -> torch.Tensor:
+    # The value head predicts the acting team's value; mirror it for the opponent
+    # so rollout-end bootstraps can still fill both team slots.
+    signed = -values.unsqueeze(-1).expand(*values.shape, 2).clone()
+    signed.scatter_(-1, acting_teams.unsqueeze(-1), values.unsqueeze(-1))
+    return signed
 
 
 def _concat_action_segments(

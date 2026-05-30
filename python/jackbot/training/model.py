@@ -39,6 +39,14 @@ class JackbotNet(nn.Module):
         )
         self.value_head = nn.Linear(hidden_size, 1)
         self.belief_head = nn.Linear(hidden_size, BELIEF_SIZE)
+        self._init_weights()
+
+    def _init_weights(self) -> None:
+        _init_mlp_linear_layers(self.obs_trunk, _gelu_gain())
+        _init_mlp_linear_layers(self.action_head, _gelu_gain())
+        _orthogonal_linear(self.action_head[-1], 0.01)
+        _orthogonal_linear(self.value_head, 1.0)
+        _orthogonal_linear(self.belief_head, 1.0)
 
     def forward(
         self,
@@ -95,3 +103,18 @@ def _segment_argmax(logits: torch.Tensor, offsets: torch.Tensor) -> torch.Tensor
     for start, end in zip(offsets[:-1].tolist(), offsets[1:].tolist(), strict=True):
         actions.append(int(torch.argmax(logits[start:end]).item()))
     return torch.tensor(actions, device=logits.device, dtype=torch.long)
+
+
+def _orthogonal_linear(layer: nn.Linear, gain: float) -> None:
+    nn.init.orthogonal_(layer.weight, gain=gain)
+    nn.init.zeros_(layer.bias)
+
+
+def _init_mlp_linear_layers(module: nn.Module, gain: float) -> None:
+    for layer in module.modules():
+        if isinstance(layer, nn.Linear):
+            _orthogonal_linear(layer, gain)
+
+
+def _gelu_gain() -> float:
+    return 2.0**0.5

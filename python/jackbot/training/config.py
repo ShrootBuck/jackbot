@@ -13,8 +13,10 @@ class TrainConfig:
     ppo_epochs: int = 3
     minibatch_size: int = 4_096
     gamma: float = 0.995
+    gae_lambda: float = 0.95
     clip: float = 0.2
     lr: float = 3e-4
+    anneal_lr: bool = True
     entropy_coef: float = 0.01
     value_coef: float = 0.5
     belief_coef: float = 0.05

@@ -49,6 +49,8 @@ def train(config: TrainConfig, resume: Path | None = None) -> None:
 
     try:
         for update in range(start_update, config.total_updates):
+            lr = _learning_rate_for_update(config, update)
+            _set_learning_rate(optimizer, lr)
             scale = shaping_scale(config, update)
             rollout, batch = collect_rollout(env, model, batch, config, device, scale)
             stats = ppo_update(model, optimizer, rollout, config)
@@ -68,6 +70,7 @@ def train(config: TrainConfig, resume: Path | None = None) -> None:
                 "train/completed_games": completed_games,
                 "train/game_length_mean": stats.game_length_mean,
                 "train/shaping_scale": scale,
+                "train/lr": lr,
                 "train/update": update + 1,
             }
 
@@ -156,6 +159,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--rollout-len", type=int, default=None)
     parser.add_argument("--hidden-size", type=int, default=None)
     parser.add_argument("--device", default=None)
+    parser.add_argument("--no-lr-anneal", action="store_true")
     parser.add_argument("--no-wandb", action="store_true")
     parser.add_argument("--wandb-mode", default=None)
     return parser.parse_args()
@@ -173,6 +177,8 @@ def config_from_args(args: argparse.Namespace) -> TrainConfig:
         config.hidden_size = args.hidden_size
     if args.device is not None:
         config.device = args.device
+    if args.no_lr_anneal:
+        config.anneal_lr = False
     if args.no_wandb:
         config.use_wandb = False
     if args.wandb_mode is not None:
@@ -183,6 +189,18 @@ def config_from_args(args: argparse.Namespace) -> TrainConfig:
 def main() -> None:
     args = parse_args()
     train(config_from_args(args), args.resume)
+
+
+def _learning_rate_for_update(config: TrainConfig, update: int) -> float:
+    if not config.anneal_lr:
+        return config.lr
+    progress = update / max(1, config.total_updates)
+    return config.lr * max(0.0, 1.0 - progress)
+
+
+def _set_learning_rate(optimizer: torch.optim.Optimizer, lr: float) -> None:
+    for group in optimizer.param_groups:
+        group["lr"] = lr
 
 
 if __name__ == "__main__":
