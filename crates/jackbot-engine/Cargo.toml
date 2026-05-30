@@ -1,0 +1,11 @@
+[package]
+name = "jackbot-engine"
+version = "0.1.0"
+edition = "2024"
+description = "Fast Jackaroo game engine for Jackbot self-play experiments"
+license = "MIT"
+
+[lib]
+name = "jackbot_engine"
+path = "src/lib.rs"
+
