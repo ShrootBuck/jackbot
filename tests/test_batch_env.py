@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from jackbot import ACTION_SIZE, BELIEF_SIZE, OBS_SIZE, BatchEnv
+from jackbot import ACTION_SIZE, BELIEF_SIZE, OBS_SIZE, BatchEnv, PlayGame
 
 
 def test_batch_reset_shapes() -> None:
@@ -33,3 +33,14 @@ def test_batch_step_shapes_and_offsets() -> None:
     assert next_batch["game_lengths"].shape == (4,)
     assert next_batch["acting_teams"].shape == (4,)
     assert next_batch["action_offsets"][-1] == len(next_batch["action_features"])
+
+
+def test_play_game_exposes_single_game_batch() -> None:
+    game = PlayGame(1)
+    batch = game.batch()
+
+    assert batch["obs"].shape == (1, OBS_SIZE)
+    assert batch["action_features"].shape[1] == ACTION_SIZE
+    assert batch["action_offsets"].tolist()[0] == 0
+    assert batch["action_offsets"].tolist()[-1] == len(game.legal_action_labels())
+    assert "P1 to act" in game.turn_text()

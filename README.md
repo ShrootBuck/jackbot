@@ -57,6 +57,15 @@ Evaluate the best checkpoint:
 ./scripts/eval.sh
 ```
 
+Play against a checkpoint:
+
+```bash
+uv run jackbot-play checkpoints/jackbot_best.pt --device cpu
+```
+
+By default, you are P2+P4 and the model is P1+P3. Add `--human-team even` if
+you want to swap sides.
+
 ## Engine
 
 The engine crate lives in `crates/jackbot-engine` and owns:

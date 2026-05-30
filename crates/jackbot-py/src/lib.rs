@@ -1,5 +1,6 @@
 use jackbot_engine::{
-    Game, LegalAction, MarbleLocation, NUM_PLAYERS, Observation, Rules, StepEvents, Team,
+    ActionKind, Card, Direction, Game, LegalAction, MarbleLocation, MoveLeg, NUM_PLAYERS,
+    Observation, Rules, StepEvents, StepOutcome, Team,
 };
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
@@ -19,6 +20,11 @@ pub struct BatchEnv {
     game_steps: Vec<u64>,
 }
 
+#[pyclass]
+pub struct PlayGame {
+    game: Game,
+}
+
 struct BatchArrays {
     obs: Vec<Vec<f32>>,
     action_features: Vec<Vec<f32>>,
@@ -26,6 +32,81 @@ struct BatchArrays {
     env_ids: Vec<i64>,
     current_players: Vec<i64>,
     belief_targets: Vec<Vec<f32>>,
+}
+
+#[pymethods]
+impl PlayGame {
+    #[new]
+    #[pyo3(signature = (seed=1))]
+    pub fn new(seed: u64) -> Self {
+        Self {
+            game: Game::new(seed, Rules::canonical_v1()),
+        }
+    }
+
+    #[getter]
+    pub fn current_player(&self) -> usize {
+        self.game.current_player()
+    }
+
+    #[getter]
+    pub fn turn_index(&self) -> u64 {
+        self.game.turn_index()
+    }
+
+    pub fn winner(&self) -> Option<usize> {
+        self.game.winner().map(Team::index)
+    }
+
+    pub fn batch(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
+        let arrays = snapshot_game(&self.game, 0)?;
+        batch_to_dict(
+            py,
+            arrays,
+            vec![0.0],
+            vec![vec![0.0, 0.0]],
+            vec![false],
+            vec![-1],
+            vec![0],
+            vec![0],
+            vec![0],
+        )
+    }
+
+    pub fn turn_text(&self) -> PyResult<String> {
+        let player = self.game.current_player();
+        let observation = self
+            .game
+            .observation(player)
+            .map_err(|err| PyValueError::new_err(err.to_string()))?;
+        let labels =
+            MarbleLabels::from_observation(&observation, self.game.rules().home_entry_distance());
+        Ok(turn_text(&observation, &labels))
+    }
+
+    pub fn legal_action_labels(&self) -> PyResult<Vec<(usize, String)>> {
+        let player = self.game.current_player();
+        let observation = self
+            .game
+            .observation(player)
+            .map_err(|err| PyValueError::new_err(err.to_string()))?;
+        let labels =
+            MarbleLabels::from_observation(&observation, self.game.rules().home_entry_distance());
+        Ok(self
+            .game
+            .legal_actions()
+            .iter()
+            .map(|action| (action.id, action_label(action, &labels)))
+            .collect())
+    }
+
+    pub fn step(&mut self, action_id: usize) -> PyResult<String> {
+        let outcome = self
+            .game
+            .step(action_id)
+            .map_err(|err| PyValueError::new_err(err.to_string()))?;
+        Ok(outcome_text(&outcome))
+    }
 }
 
 #[pymethods]
@@ -111,12 +192,8 @@ impl BatchEnv {
                 .step(action_index)
                 .map_err(|err| PyValueError::new_err(err.to_string()))?;
             self.game_steps[env_index] += 1;
-            let scaled_team_rewards = scaled_team_rewards(
-                game.rules(),
-                &outcome.events,
-                outcome.winner,
-                shaping_scale,
-            );
+            let scaled_team_rewards =
+                scaled_team_rewards(game.rules(), &outcome.events, outcome.winner, shaping_scale);
             let winner = outcome.winner.map_or(-1, |team| team.index() as i64);
             let done = outcome.winner.is_some();
 
@@ -158,6 +235,7 @@ impl BatchEnv {
 #[pymodule]
 fn _jackbot(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<BatchEnv>()?;
+    m.add_class::<PlayGame>()?;
     m.add("OBS_SIZE", OBS_SIZE)?;
     m.add("ACTION_SIZE", ACTION_SIZE)?;
     m.add("BELIEF_SIZE", BELIEF_SIZE)?;
@@ -206,6 +284,29 @@ impl BatchEnv {
     }
 }
 
+fn snapshot_game(game: &Game, env_index: usize) -> PyResult<BatchArrays> {
+    let player = game.current_player();
+    let observation = game
+        .observation(player)
+        .map_err(|err| PyValueError::new_err(err.to_string()))?;
+    let legal_actions = game.legal_actions();
+    let targets = game
+        .hidden_hand_targets(player)
+        .map_err(|err| PyValueError::new_err(err.to_string()))?;
+
+    Ok(BatchArrays {
+        obs: vec![encode_observation(&observation, game.rules())],
+        action_features: legal_actions
+            .iter()
+            .map(|action| encode_action_features(player, action))
+            .collect(),
+        action_offsets: vec![0, legal_actions.len() as i64],
+        env_ids: vec![env_index as i64; legal_actions.len()],
+        current_players: vec![player as i64],
+        belief_targets: vec![flatten_targets(targets)],
+    })
+}
+
 fn make_envs(num_envs: usize, seed: u64) -> Vec<Game> {
     (0..num_envs)
         .map(|env_index| Game::new(episode_seed(seed, env_index, 0), Rules::canonical_v1()))
@@ -247,7 +348,11 @@ fn batch_to_dict(
     Ok(dict.into_any().unbind())
 }
 
-fn numpy_array(py: Python<'_>, data: impl for<'py> IntoPyObject<'py>, dtype: &str) -> PyResult<Py<PyAny>> {
+fn numpy_array(
+    py: Python<'_>,
+    data: impl for<'py> IntoPyObject<'py>,
+    dtype: &str,
+) -> PyResult<Py<PyAny>> {
     let numpy = PyModule::import(py, "numpy")?;
     let array = numpy.call_method1("asarray", (data,))?;
     let array = array.call_method1("astype", (dtype,))?;
@@ -360,8 +465,16 @@ fn encode_action_features(player: usize, action: &LegalAction) -> Vec<f32> {
     push_optional_index(&mut values, action.features.second_marble);
     values.push(f32::from(action.features.steps) / 13.0);
     values.push(f32::from(action.features.second_steps) / 7.0);
-    values.push(if action.features.starts_in_base { 1.0 } else { 0.0 });
-    values.push(if action.features.ends_in_home { 1.0 } else { 0.0 });
+    values.push(if action.features.starts_in_base {
+        1.0
+    } else {
+        0.0
+    });
+    values.push(if action.features.ends_in_home {
+        1.0
+    } else {
+        0.0
+    });
     values.push(if action.features.captures { 1.0 } else { 0.0 });
     values.push(if action.features.bulldozer { 1.0 } else { 0.0 });
 
@@ -422,6 +535,256 @@ fn scaled_team_rewards(
     rewards
 }
 
+struct MarbleLabels {
+    labels: [[usize; MARBLES_PER_PLAYER]; NUM_PLAYERS],
+}
+
+impl MarbleLabels {
+    fn from_observation(observation: &Observation, home_entry_distance: u8) -> Self {
+        let mut labels = [[0; MARBLES_PER_PLAYER]; NUM_PLAYERS];
+
+        for (player, player_labels) in labels.iter_mut().enumerate().take(NUM_PLAYERS) {
+            let mut owned = observation
+                .marbles
+                .iter()
+                .filter(|marble| marble.owner == player)
+                .collect::<Vec<_>>();
+            owned.sort_by(|left, right| {
+                progress_score(right.location, home_entry_distance)
+                    .cmp(&progress_score(left.location, home_entry_distance))
+                    .then_with(|| left.index.cmp(&right.index))
+            });
+
+            for (ordinal, marble) in owned.iter().enumerate() {
+                player_labels[marble.index] = ordinal + 1;
+            }
+        }
+
+        Self { labels }
+    }
+
+    fn marble_label(&self, player: usize, marble_index: usize) -> String {
+        format!(
+            "P{} marble #{}",
+            player + 1,
+            self.labels[player][marble_index]
+        )
+    }
+
+    fn ordinal(&self, player: usize, marble_index: usize) -> usize {
+        self.labels[player][marble_index]
+    }
+}
+
+fn turn_text(observation: &Observation, labels: &MarbleLabels) -> String {
+    let mut lines = vec![
+        format!(
+            "Turn {} | {} to act | hand: {}",
+            observation.turn_index,
+            player_label(observation.current_player),
+            cards(&observation.own_hand)
+        ),
+        format!(
+            "Hand sizes: P1={} P2={} P3={} P4={} | deck left: {}",
+            observation.hand_sizes[0],
+            observation.hand_sizes[1],
+            observation.hand_sizes[2],
+            observation.hand_sizes[3],
+            observation.deck_remaining
+        ),
+    ];
+    lines.extend(board_lines(observation, labels));
+    lines.join("\n")
+}
+
+fn board_lines(observation: &Observation, labels: &MarbleLabels) -> Vec<String> {
+    (0..NUM_PLAYERS)
+        .map(|player| {
+            let mut marbles = observation
+                .marbles
+                .iter()
+                .filter(|marble| marble.owner == player)
+                .map(|marble| {
+                    (
+                        labels.ordinal(player, marble.index),
+                        format!(
+                            "#{}={}",
+                            labels.ordinal(player, marble.index),
+                            location_label(marble.location, marble.track_index)
+                        ),
+                    )
+                })
+                .collect::<Vec<_>>();
+            marbles.sort_by_key(|(ordinal, _)| *ordinal);
+            let labels = marbles
+                .into_iter()
+                .map(|(_, label)| label)
+                .collect::<Vec<_>>();
+            format!("{}: {}", player_label(player), labels.join("  "))
+        })
+        .collect()
+}
+
+fn action_label(action: &LegalAction, labels: &MarbleLabels) -> String {
+    let card = action
+        .card
+        .map_or_else(|| "no-card".to_string(), |card| card.to_string());
+    match &action.kind {
+        ActionKind::Enter {
+            owner,
+            marble_index,
+        } => format!(
+            "{card}: spawn {}",
+            labels.marble_label(*owner, *marble_index)
+        ),
+        ActionKind::Move {
+            owner,
+            marble_index,
+            steps,
+            direction,
+            bulldozer,
+        } => {
+            let bulldozer_label = if *bulldozer { " bulldozer" } else { "" };
+            format!(
+                "{card}: move {} {} {steps}{bulldozer_label}",
+                labels.marble_label(*owner, *marble_index),
+                direction_label(*direction)
+            )
+        }
+        ActionKind::SplitSeven { first, second } => {
+            format!(
+                "{card}: split 7: {}, then {}",
+                leg_label(*first, labels),
+                leg_label(*second, labels)
+            )
+        }
+        ActionKind::Swap {
+            owner,
+            marble_index,
+            target_player,
+            target_marble_index,
+        } => format!(
+            "{card}: swap {} with {}",
+            labels.marble_label(*owner, *marble_index),
+            labels.marble_label(*target_player, *target_marble_index)
+        ),
+        ActionKind::SkipNext => format!("{card}: skip next player / random discard"),
+        ActionKind::Burn => format!("{card}: burn"),
+        ActionKind::PassNoCards => "pass (no cards)".to_string(),
+    }
+}
+
+fn outcome_text(outcome: &StepOutcome) -> String {
+    let card = outcome
+        .played_card
+        .map_or_else(|| "no card".to_string(), |card| card.to_string());
+    let mut lines = vec![format!(
+        "{} played {card}; next: {}",
+        player_label(outcome.current_player),
+        player_label(outcome.next_player)
+    )];
+
+    if let Some((player, card)) = outcome.forced_discard {
+        lines.push(format!(
+            "{} was skipped and randomly discarded {card}.",
+            player_label(player)
+        ));
+    }
+
+    if outcome.events.entered_from_base > 0 {
+        lines.push("Entered from base.".to_string());
+    }
+    if outcome.events.forward_steps > 0 {
+        lines.push(format!(
+            "Moved forward {} total step(s).",
+            outcome.events.forward_steps
+        ));
+    }
+    if outcome.events.backward_steps > 0 {
+        lines.push(format!(
+            "Moved backward {} total step(s).",
+            outcome.events.backward_steps
+        ));
+    }
+    if outcome.events.entered_home > 0 {
+        lines.push("Entered home.".to_string());
+    }
+    if outcome.events.captures > 0 {
+        lines.push(format!("Captured {} marble(s).", outcome.events.captures));
+    }
+    if outcome.events.burns > 0 {
+        lines.push("Burned a card.".to_string());
+    }
+    if let Some(winner) = outcome.winner {
+        lines.push(format!("Winner: {}", team_label(winner)));
+    }
+
+    lines.join("\n")
+}
+
+fn leg_label(leg: MoveLeg, labels: &MarbleLabels) -> String {
+    format!(
+        "move {} forward {}",
+        labels.marble_label(leg.owner, leg.marble_index),
+        leg.steps
+    )
+}
+
+fn cards(cards: &[Card]) -> String {
+    if cards.is_empty() {
+        return "(empty)".to_string();
+    }
+    cards
+        .iter()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn location_label(location: MarbleLocation, track_index: Option<u8>) -> String {
+    match location {
+        MarbleLocation::Base => "base".to_string(),
+        MarbleLocation::Track { distance: 0 } => {
+            let absolute = track_index.expect("track marble should have track index");
+            format!("spawn/abs{absolute}")
+        }
+        MarbleLocation::Track { distance } => {
+            let absolute = track_index.expect("track marble should have track index");
+            format!("track d{distance}/abs{absolute}")
+        }
+        MarbleLocation::Home { slot } => format!("home{}", slot + 1),
+    }
+}
+
+fn direction_label(direction: Direction) -> &'static str {
+    match direction {
+        Direction::Forward => "forward",
+        Direction::Backward => "backward",
+    }
+}
+
+fn player_label(player: usize) -> String {
+    format!("P{}", player + 1)
+}
+
+fn team_label(team: Team) -> &'static str {
+    match team {
+        Team::Even => "P1 + P3",
+        Team::Odd => "P2 + P4",
+    }
+}
+
+fn progress_score(location: MarbleLocation, home_entry_distance: u8) -> i16 {
+    match location {
+        MarbleLocation::Base => -100,
+        MarbleLocation::Track { distance } if distance <= home_entry_distance => {
+            i16::from(distance)
+        }
+        MarbleLocation::Track { distance } => -10 - i16::from(distance - home_entry_distance),
+        MarbleLocation::Home { slot } => 100 + i16::from(slot),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -431,7 +794,10 @@ mod tests {
         let game = Game::new(1, Rules::canonical_v1());
         let observation = game.observation(game.current_player()).unwrap();
 
-        assert_eq!(encode_observation(&observation, game.rules()).len(), OBS_SIZE);
+        assert_eq!(
+            encode_observation(&observation, game.rules()).len(),
+            OBS_SIZE
+        );
     }
 
     #[test]

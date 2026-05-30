@@ -18,6 +18,7 @@ dependencies = [
 [project.scripts]
 jackbot-train = "jackbot.training.train:main"
 jackbot-eval = "jackbot.training.evaluate:main"
+jackbot-play = "jackbot.training.play:main"
 
 [dependency-groups]
 dev = [
