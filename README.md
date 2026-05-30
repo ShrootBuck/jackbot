@@ -47,9 +47,9 @@ suggestion on the engine and mirror it on your physical board. Type `l` whenever
 you want to see the full legal move list.
 
 Terminal marble labels are sorted by each player's progress toward home:
-`#1` is closest to finished, then `#2`, and so on. The stable engine marble ID is
-shown in brackets, like `P1 marble #2 [debug m4]`, so debugging and replay still
-have fixed identities.
+`#1` is closest to finished, then `#2`, and so on. The CLI hides stable engine
+marble IDs because seeded replays are fast enough when we need to debug exact
+state.
 
 ## Current house-rule model
 
@@ -65,7 +65,8 @@ have fixed identities.
   spawn; moving forward from there enters home slot `0`.
 - Home has 4 slots. Home movement is forward-only and exact-count.
 - A marble on its own spawn is a hard blockade: nobody can pass, kill, or swap
-  it, but its owner can move it forward normally.
+  it. Even the owner cannot use a Jack to swap it off spawn; it can only move
+  by legal movement cards such as forward movement or backward 4.
 - Burning is forced-only. If any legal play exists, burn actions are not legal.
 - Deal cycle is 4 cards, 4 cards, 5 cards, then reshuffle.
 - Finished players keep using their own hand, but their own-piece cards control

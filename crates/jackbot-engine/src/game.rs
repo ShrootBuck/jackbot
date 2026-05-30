@@ -1444,6 +1444,20 @@ mod tests {
     }
 
     #[test]
+    fn skip_next_blocks_burning_own_card() {
+        let mut game = Game::new(7, Rules::canonical_v1());
+        game.hands = std::array::from_fn(|_| Vec::new());
+        game.hands[0] = vec![suited(Rank::Queen, Suit::Hearts), card(Rank::Two)];
+        game.hands[1] = vec![card(Rank::Three)];
+        game.current_player = 0;
+
+        let actions = game.legal_actions();
+
+        assert!(actions.iter().any(|a| matches!(a.kind, ActionKind::SkipNext)));
+        assert!(!actions.iter().any(|a| matches!(a.kind, ActionKind::Burn)));
+    }
+
+    #[test]
     fn burn_choices_exist_only_when_no_card_is_playable() {
         let game = game_with_hand(Rank::Two);
 
@@ -1516,6 +1530,36 @@ mod tests {
         let outcome = game.step(action_id).unwrap();
 
         assert_eq!(game.marbles[0].location, MarbleLocation::Home { slot: 0 });
+        assert_eq!(outcome.events.entered_home, 1);
+    }
+
+    #[test]
+    fn forward_moves_branch_into_home_instead_of_passing_entry() {
+        let mut game = game_with_hand(Rank::Five);
+        game.marbles[0].location = MarbleLocation::Track { distance: 72 };
+        game.hands[0] = vec![card(Rank::Five)];
+
+        let action_id = game
+            .legal_actions()
+            .into_iter()
+            .find(|a| {
+                matches!(
+                    a.kind,
+                    ActionKind::Move {
+                        owner: 0,
+                        marble_index: 0,
+                        steps: 5,
+                        direction: Direction::Forward,
+                        ..
+                    }
+                )
+            })
+            .expect("expected forward five into home")
+            .id;
+
+        let outcome = game.step(action_id).unwrap();
+
+        assert_eq!(game.marbles[0].location, MarbleLocation::Home { slot: 2 });
         assert_eq!(outcome.events.entered_home, 1);
     }
 
@@ -1631,6 +1675,24 @@ mod tests {
                 ActionKind::Enter {
                     owner: 0,
                     marble_index: 1
+                }
+            )
+        }));
+    }
+
+    #[test]
+    fn jack_cannot_swap_own_spawn_blockade() {
+        let mut game = game_with_hand(Rank::Jack);
+        game.marbles[0].location = MarbleLocation::Track { distance: 0 };
+        game.marbles[4].location = MarbleLocation::Track { distance: 10 };
+
+        assert!(!game.legal_actions().iter().any(|a| {
+            matches!(
+                a.kind,
+                ActionKind::Swap {
+                    owner: 0,
+                    marble_index: 0,
+                    ..
                 }
             )
         }));
