@@ -35,7 +35,7 @@ impl MarbleLabels {
 
     pub fn marble_label(&self, player: usize, marble_index: usize) -> String {
         format!(
-            "P{}#{}(m{})",
+            "P{} marble #{} [debug m{}]",
             player + 1,
             self.labels[player][marble_index],
             marble_index + 1
@@ -215,7 +215,7 @@ fn print_board(observation: &Observation, labels: &MarbleLabels) {
                 (
                     labels.ordinal(player, marble.index),
                     format!(
-                        "#{}(m{})={}",
+                        "#{} [m{}]={}",
                         labels.ordinal(player, marble.index),
                         marble.index + 1,
                         location_label(marble.location, marble.track_index)
@@ -254,6 +254,10 @@ fn cards(cards: &[Card]) -> String {
 fn location_label(location: MarbleLocation, track_index: Option<u8>) -> String {
     match location {
         MarbleLocation::Base => "base".to_string(),
+        MarbleLocation::Track { distance: 0 } => {
+            let absolute = track_index.expect("track marble should have track index");
+            format!("spawn/abs{absolute}")
+        }
         MarbleLocation::Track { distance } => {
             let absolute = track_index.expect("track marble should have track index");
             format!("track d{distance}/abs{absolute}")

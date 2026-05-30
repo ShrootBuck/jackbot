@@ -379,6 +379,9 @@ impl Game {
                         .iter()
                         .filter(|marble| !matches!(marble.location, MarbleLocation::Base))
                     {
+                        if self.is_protected(marble) && marble.owner != controlled_player {
+                            continue;
+                        }
                         if self
                             .simulate_move(
                                 &self.marbles,
@@ -1728,6 +1731,44 @@ mod tests {
                 a.kind,
                 ActionKind::Move {
                     owner: 2,
+                    marble_index: 0,
+                    steps: 5,
+                    direction: Direction::Forward,
+                    ..
+                }
+            )
+        }));
+    }
+
+    #[test]
+    fn five_cannot_move_someone_elses_spawn_blockade() {
+        let mut game = game_with_hand(Rank::Five);
+        game.marbles[8].location = MarbleLocation::Track { distance: 0 };
+
+        assert!(!game.legal_actions().iter().any(|a| {
+            matches!(
+                a.kind,
+                ActionKind::Move {
+                    owner: 2,
+                    marble_index: 0,
+                    steps: 5,
+                    direction: Direction::Forward,
+                    ..
+                }
+            )
+        }));
+    }
+
+    #[test]
+    fn five_can_move_own_spawn_blockade() {
+        let mut game = game_with_hand(Rank::Five);
+        game.marbles[0].location = MarbleLocation::Track { distance: 0 };
+
+        assert!(game.legal_actions().iter().any(|a| {
+            matches!(
+                a.kind,
+                ActionKind::Move {
+                    owner: 0,
                     marble_index: 0,
                     steps: 5,
                     direction: Direction::Forward,

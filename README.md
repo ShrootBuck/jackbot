@@ -48,12 +48,15 @@ you want to see the full legal move list.
 
 Terminal marble labels are sorted by each player's progress toward home:
 `#1` is closest to finished, then `#2`, and so on. The stable engine marble ID is
-shown in parentheses, like `P1#2(m4)`, so debugging and replay still have fixed
-identities.
+shown in brackets, like `P1 marble #2 [debug m4]`, so debugging and replay still
+have fixed identities.
 
 ## Current house-rule model
 
 - Internal players are `0..3`; user-facing tools should show them as `P1..P4`.
+- Player labels go clockwise in turn order: `P1 -> P2 -> P3 -> P4 -> P1`.
+  For a real game, choose `P1` as you or the starting seat, then label the rest
+  clockwise.
 - Teams are `P1 + P3` vs `P2 + P4`.
 - The main track has 76 spaces. Spawn points are 19 spaces apart, meaning 18
   spaces between spawn points, not counting the spawn spaces themselves.
