@@ -87,5 +87,27 @@ like "play 7D, move P1 marble 2 forward 3, then P1 marble 0 forward 4."
 ## Later training layer
 
 When the rules are stable, the Python side should use `uv`, PyTorch, and
-TensorBoard. TensorBoard should track training reward, policy loss, value loss,
-entropy, win rate by baseline, engine steps/sec, GPU utilization, and RAM usage.
+Weights & Biases (`wandb`) instead of TensorBoard. W&B should track training
+reward, policy loss, value loss, entropy, win rate by baseline, engine steps/sec,
+GPU/CPU utilization, temperatures when available, RAM usage, and checkpoint
+metadata.
+
+The realistic baseline training machine is an old M1 MacBook Pro, not an
+8x-H100 cluster. The strategy should stay the same either way: keep memory
+bounded, stream short rollouts, checkpoint aggressively, and let slower hardware
+run longer. Bigger GPUs should reduce wall-clock time, not require a different
+algorithm or a giant RAM-hungry replay setup.
+
+Long training runs need explicit checkpointing. The training script should:
+
+- overwrite `checkpoints/jackbot_latest.pt` on a fixed interval so training can
+  resume after a crash or reboot
+- save `checkpoints/jackbot_best.pt` whenever arena win rate or Elo reaches a
+  new high
+- archive milestone checkpoints like `checkpoints/epoch_050.pt` so bad RL runs
+  can roll back before catastrophic forgetting
+- log each checkpoint path and evaluation score to W&B
+
+For under-the-bed/server runs, keep the machine awake, plugged in, and on a hard
+surface with real airflow. RL training is sustained CPU/GPU load; carpet is not
+a cooling strategy, it is a slow-motion hardware crime scene.
