@@ -19,7 +19,7 @@ class TrainConfig:
     value_coef: float = 0.5
     belief_coef: float = 0.05
     max_grad_norm: float = 1.0
-    hidden_size: int = 256
+    hidden_size: int = 2048
     shaping_start: float = 1.0
     shaping_decay_fraction: float = 0.40
     device: str = "auto"

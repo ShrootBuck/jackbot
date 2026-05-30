@@ -145,6 +145,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--updates", type=int, default=None)
     parser.add_argument("--num-envs", type=int, default=None)
     parser.add_argument("--rollout-len", type=int, default=None)
+    parser.add_argument("--hidden-size", type=int, default=None)
     parser.add_argument("--device", default=None)
     parser.add_argument("--no-wandb", action="store_true")
     parser.add_argument("--wandb-mode", default=None)
@@ -159,6 +160,8 @@ def config_from_args(args: argparse.Namespace) -> TrainConfig:
         config.num_envs = args.num_envs
     if args.rollout_len is not None:
         config.rollout_len = args.rollout_len
+    if args.hidden_size is not None:
+        config.hidden_size = args.hidden_size
     if args.device is not None:
         config.device = args.device
     if args.no_wandb:

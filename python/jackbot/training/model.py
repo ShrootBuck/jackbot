@@ -24,7 +24,7 @@ class PolicyOutput:
 
 
 class JackbotNet(nn.Module):
-    def __init__(self, hidden_size: int = 256) -> None:
+    def __init__(self, hidden_size: int = 2048) -> None:
         super().__init__()
         self.obs_trunk = nn.Sequential(
             nn.Linear(OBS_SIZE, hidden_size),
