@@ -141,10 +141,23 @@ Run a real first training job locally:
 uv run jackbot-train --wandb-mode online
 ```
 
+For a full production run on the dedicated Mac, keep the machine awake with
+`caffeinate`:
+
+```bash
+caffeinate -dimsu ./scripts/train.sh
+```
+
 Resume after a crash/reboot:
 
 ```bash
 uv run jackbot-train --resume checkpoints/jackbot_latest.pt
+```
+
+Or keep the Mac awake while resuming:
+
+```bash
+caffeinate -dimsu ./scripts/resume.sh
 ```
 
 Evaluate a checkpoint:
