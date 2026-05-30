@@ -12,9 +12,21 @@ export RUSTFLAGS="${RUSTFLAGS:--C target-cpu=native}"
 # Keep uv away from the system Python. PyTorch support is the constraint here.
 export UV_PYTHON="${UV_PYTHON:-3.12}"
 
+# PyO3 needs the same Python that uv/maturin uses. Without this, `cargo test`
+# can accidentally find Xcode's Python 3.9 framework on macOS and then fail to
+# link against a library Apple does not ship.
+if [[ -x "${REPO_ROOT}/.venv/bin/python" ]]; then
+  export PYO3_PYTHON="${PYO3_PYTHON:-${REPO_ROOT}/.venv/bin/python}"
+fi
+
 # Helps PyTorch survive occasional MPS operator gaps instead of hard-crashing.
 export PYTORCH_ENABLE_MPS_FALLBACK="${PYTORCH_ENABLE_MPS_FALLBACK:-1}"
 
 echo "repo: ${REPO_ROOT}"
 echo "RUSTFLAGS=${RUSTFLAGS}"
 echo "UV_PYTHON=${UV_PYTHON}"
+if [[ -n "${PYO3_PYTHON:-}" ]]; then
+  echo "PYO3_PYTHON=${PYO3_PYTHON}"
+else
+  echo "PYO3_PYTHON=(unset; run ./scripts/bootstrap.sh first if cargo links the wrong Python)"
+fi
