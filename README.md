@@ -101,6 +101,27 @@ Set up the pinned Python 3.12 environment and build the Rust extension:
 uv sync --group dev
 ```
 
+The helper scripts do the same thing with `RUSTFLAGS="-C target-cpu=native"` so
+Rust compiles for the exact CPU on the current Mac:
+
+```bash
+./scripts/bootstrap.sh
+./scripts/verify.sh
+./scripts/smoke_train.sh
+./scripts/short_train.sh
+./scripts/train.sh
+./scripts/resume.sh
+./scripts/eval.sh
+```
+
+`target-cpu=native` is mainly for the Rust engine and PyO3 extension. It does
+not magically turn PyTorch into MLX; the model still uses PyTorch's selected
+device (`mps` or `cpu`) at runtime.
+
+Run `./scripts/bootstrap.sh` after pulling new code or changing Rust files; it
+forces a reinstall of the local `jackbot` package so the compiled extension is
+rebuilt with the native CPU flag.
+
 Run the full test suite:
 
 ```bash
