@@ -31,8 +31,9 @@ def train(config: TrainConfig, resume: Path | None = None) -> None:
     start_update = 0
     global_steps = 0
     best_score = float("-inf")
+    completed_games = 0
     if resume is not None:
-        loaded_config, start_update, global_steps, best_score = load_checkpoint(
+        loaded_config, start_update, global_steps, best_score, completed_games = load_checkpoint(
             resume,
             model,
             optimizer,
@@ -53,6 +54,7 @@ def train(config: TrainConfig, resume: Path | None = None) -> None:
             stats = ppo_update(model, optimizer, rollout, config)
             del rollout
             global_steps += config.num_envs * config.rollout_len
+            completed_games += stats.completed_games
 
             metrics = {
                 "train/loss": stats.loss,
@@ -63,6 +65,8 @@ def train(config: TrainConfig, resume: Path | None = None) -> None:
                 "train/approx_kl": stats.approx_kl,
                 "train/clip_fraction": stats.clip_fraction,
                 "train/mean_team_reward": stats.mean_reward,
+                "train/completed_games": completed_games,
+                "train/game_length_mean": stats.game_length_mean,
                 "train/shaping_scale": scale,
                 "train/update": update + 1,
             }
@@ -95,6 +99,7 @@ def train(config: TrainConfig, resume: Path | None = None) -> None:
                         update + 1,
                         global_steps,
                         best_score,
+                        completed_games,
                     )
 
             should_save_by_update = (update + 1) % config.checkpoint_interval_updates == 0
@@ -111,6 +116,7 @@ def train(config: TrainConfig, resume: Path | None = None) -> None:
                     update + 1,
                     global_steps,
                     best_score,
+                    completed_games,
                 )
                 last_checkpoint = time.monotonic()
 
@@ -123,6 +129,7 @@ def train(config: TrainConfig, resume: Path | None = None) -> None:
                     update + 1,
                     global_steps,
                     best_score,
+                    completed_games,
                 )
 
             logger.log(metrics, global_steps)
@@ -135,6 +142,7 @@ def train(config: TrainConfig, resume: Path | None = None) -> None:
             min(config.total_updates, update + 1 if "update" in locals() else start_update),
             global_steps,
             best_score,
+            completed_games,
         )
         logger.finish()
 

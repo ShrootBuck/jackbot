@@ -18,6 +18,7 @@ def save_checkpoint(
     update: int,
     global_steps: int,
     best_score: float,
+    completed_games: int = 0,
 ) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     payload = {
@@ -27,6 +28,7 @@ def save_checkpoint(
         "update": update,
         "global_steps": global_steps,
         "best_score": best_score,
+        "completed_games": completed_games,
         "rng": {
             "python": random.getstate(),
             "numpy": np.random.get_state(),
@@ -44,7 +46,7 @@ def load_checkpoint(
     model: JackbotNet,
     optimizer: torch.optim.Optimizer | None = None,
     device: torch.device | str = "cpu",
-) -> tuple[TrainConfig, int, int, float]:
+) -> tuple[TrainConfig, int, int, float, int]:
     checkpoint = torch.load(path, map_location=device, weights_only=False)
     model.load_state_dict(checkpoint["model"])
     if optimizer is not None:
@@ -55,6 +57,7 @@ def load_checkpoint(
         int(checkpoint["update"]),
         int(checkpoint["global_steps"]),
         float(checkpoint.get("best_score", float("-inf"))),
+        int(checkpoint.get("completed_games", 0)),
     )
 
 

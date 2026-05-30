@@ -36,6 +36,7 @@ class TensorBatch:
     winners: torch.Tensor
     acting_players: torch.Tensor
     acting_teams: torch.Tensor
+    game_lengths: torch.Tensor
 
 
 def make_env(num_envs: int, seed: int) -> BatchEnv:
@@ -65,6 +66,7 @@ def to_tensors(batch: dict[str, np.ndarray], device: torch.device) -> TensorBatc
         winners=_long(batch["winners"], device),
         acting_players=_long(batch["acting_players"], device),
         acting_teams=_long(batch["acting_teams"], device),
+        game_lengths=_long(batch["game_lengths"], device),
     )
 
 

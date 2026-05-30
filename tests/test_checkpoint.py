@@ -13,8 +13,17 @@ def test_checkpoint_roundtrip(tmp_path) -> None:
     optimizer = torch.optim.AdamW(model.parameters(), lr=config.lr)
     path = tmp_path / "checkpoint.pt"
 
-    save_checkpoint(path, model, optimizer, config, update=3, global_steps=123, best_score=0.75)
-    loaded_config, update, global_steps, best_score = load_checkpoint(
+    save_checkpoint(
+        path,
+        model,
+        optimizer,
+        config,
+        update=3,
+        global_steps=123,
+        best_score=0.75,
+        completed_games=42,
+    )
+    loaded_config, update, global_steps, best_score, completed_games = load_checkpoint(
         path,
         model,
         optimizer,
@@ -24,3 +33,4 @@ def test_checkpoint_roundtrip(tmp_path) -> None:
     assert update == 3
     assert global_steps == 123
     assert best_score == 0.75
+    assert completed_games == 42

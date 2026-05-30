@@ -26,6 +26,7 @@ class Rollout:
     advantages: torch.Tensor
     team_rewards: torch.Tensor
     dones: torch.Tensor
+    game_lengths: torch.Tensor
     action_starts: torch.Tensor
     action_ends: torch.Tensor
 
@@ -40,6 +41,8 @@ class UpdateStats:
     approx_kl: float
     clip_fraction: float
     mean_reward: float
+    completed_games: int
+    game_length_mean: float
 
 
 def collect_rollout(
@@ -60,6 +63,7 @@ def collect_rollout(
     reward_parts: list[torch.Tensor] = []
     team_reward_parts: list[torch.Tensor] = []
     done_parts: list[torch.Tensor] = []
+    game_length_parts: list[torch.Tensor] = []
     acting_team_parts: list[torch.Tensor] = []
 
     model.eval()
@@ -86,6 +90,7 @@ def collect_rollout(
         reward_parts.append(next_tensors.rewards)
         team_reward_parts.append(next_tensors.team_rewards)
         done_parts.append(next_tensors.dones)
+        game_length_parts.append(next_tensors.game_lengths)
         acting_team_parts.append(next_tensors.acting_teams)
 
         batch = next_batch
@@ -101,6 +106,7 @@ def collect_rollout(
         reward_parts,
         team_reward_parts,
         done_parts,
+        game_length_parts,
         acting_team_parts,
         config.gamma,
     )
@@ -165,6 +171,11 @@ def ppo_update(
 
     stacked = torch.stack([torch.stack(items) for items in stats])
     means = stacked.mean(dim=0).cpu().tolist()
+    completed_game_lengths = rollout.game_lengths[rollout.game_lengths > 0]
+    completed_games = int(completed_game_lengths.numel())
+    game_length_mean = (
+        float(completed_game_lengths.float().mean().item()) if completed_games else float("nan")
+    )
     return UpdateStats(
         loss=means[0],
         policy_loss=means[1],
@@ -174,6 +185,8 @@ def ppo_update(
         approx_kl=means[5],
         clip_fraction=means[6],
         mean_reward=float(rollout.team_rewards.mean().item()),
+        completed_games=completed_games,
+        game_length_mean=game_length_mean,
     )
 
 
@@ -188,6 +201,7 @@ def _assemble_rollout(
     reward_parts: list[torch.Tensor],
     team_reward_parts: list[torch.Tensor],
     done_parts: list[torch.Tensor],
+    game_length_parts: list[torch.Tensor],
     acting_team_parts: list[torch.Tensor],
     gamma: float,
 ) -> Rollout:
@@ -200,6 +214,7 @@ def _assemble_rollout(
     old_values = torch.cat(value_parts, dim=0)
     team_rewards = torch.stack(team_reward_parts, dim=0)
     dones = torch.stack(done_parts, dim=0)
+    game_lengths = torch.stack(game_length_parts, dim=0)
     acting_teams = torch.stack(acting_team_parts, dim=0)
 
     returns = _team_returns(team_rewards, dones, acting_teams, gamma).reshape(-1)
@@ -223,6 +238,7 @@ def _assemble_rollout(
         advantages=advantages,
         team_rewards=team_rewards,
         dones=dones,
+        game_lengths=game_lengths,
         action_starts=starts,
         action_ends=ends,
     )
@@ -292,6 +308,7 @@ def _slice_rollout(rollout: Rollout, rows: torch.Tensor) -> Rollout:
         advantages=rollout.advantages[rows],
         team_rewards=rollout.team_rewards,
         dones=rollout.dones,
+        game_lengths=rollout.game_lengths,
         action_starts=action_offsets[:-1],
         action_ends=action_offsets[1:],
     )

@@ -16,6 +16,7 @@ pub struct BatchEnv {
     envs: Vec<Game>,
     base_seed: u64,
     episodes: Vec<u64>,
+    game_steps: Vec<u64>,
 }
 
 struct BatchArrays {
@@ -39,6 +40,7 @@ impl BatchEnv {
             envs: make_envs(num_envs, seed),
             base_seed: seed,
             episodes: vec![0; num_envs],
+            game_steps: vec![0; num_envs],
         })
     }
 
@@ -54,6 +56,7 @@ impl BatchEnv {
         }
         self.envs = make_envs(self.envs.len(), self.base_seed);
         self.episodes.fill(0);
+        self.game_steps.fill(0);
 
         let arrays = self.snapshot()?;
         batch_to_dict(
@@ -63,6 +66,7 @@ impl BatchEnv {
             vec![vec![0.0, 0.0]; self.envs.len()],
             vec![false; self.envs.len()],
             vec![-1; self.envs.len()],
+            vec![0; self.envs.len()],
             vec![0; self.envs.len()],
             vec![0; self.envs.len()],
         )
@@ -90,6 +94,7 @@ impl BatchEnv {
         let mut winners = Vec::with_capacity(self.envs.len());
         let mut acting_players = Vec::with_capacity(self.envs.len());
         let mut acting_teams = Vec::with_capacity(self.envs.len());
+        let mut game_lengths = Vec::with_capacity(self.envs.len());
 
         for (env_index, action_index) in action_indices.into_iter().enumerate() {
             let game = &mut self.envs[env_index];
@@ -105,6 +110,7 @@ impl BatchEnv {
             let outcome = game
                 .step(action_index)
                 .map_err(|err| PyValueError::new_err(err.to_string()))?;
+            self.game_steps[env_index] += 1;
             let scaled_team_rewards = scaled_team_rewards(
                 game.rules(),
                 &outcome.events,
@@ -120,11 +126,17 @@ impl BatchEnv {
             winners.push(winner);
             acting_players.push(acting_player as i64);
             acting_teams.push(acting_team as i64);
+            game_lengths.push(if done {
+                self.game_steps[env_index] as i64
+            } else {
+                0
+            });
 
             if done {
                 self.episodes[env_index] += 1;
                 let seed = episode_seed(self.base_seed, env_index, self.episodes[env_index]);
                 self.envs[env_index] = Game::new(seed, Rules::canonical_v1());
+                self.game_steps[env_index] = 0;
             }
         }
 
@@ -138,6 +150,7 @@ impl BatchEnv {
             winners,
             acting_players,
             acting_teams,
+            game_lengths,
         )
     }
 }
@@ -215,6 +228,7 @@ fn batch_to_dict(
     winners: Vec<i64>,
     acting_players: Vec<i64>,
     acting_teams: Vec<i64>,
+    game_lengths: Vec<i64>,
 ) -> PyResult<Py<PyAny>> {
     let dict = PyDict::new(py);
     dict.set_item("obs", array_f32_2(py, arrays.obs)?)?;
@@ -229,6 +243,7 @@ fn batch_to_dict(
     dict.set_item("winners", array_i64_1(py, winners)?)?;
     dict.set_item("acting_players", array_i64_1(py, acting_players)?)?;
     dict.set_item("acting_teams", array_i64_1(py, acting_teams)?)?;
+    dict.set_item("game_lengths", array_i64_1(py, game_lengths)?)?;
     Ok(dict.into_any().unbind())
 }
 

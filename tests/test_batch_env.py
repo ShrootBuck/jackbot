@@ -30,5 +30,6 @@ def test_batch_step_shapes_and_offsets() -> None:
     assert next_batch["obs"].shape == (4, OBS_SIZE)
     assert next_batch["team_rewards"].shape == (4, 2)
     assert next_batch["dones"].shape == (4,)
+    assert next_batch["game_lengths"].shape == (4,)
     assert next_batch["acting_teams"].shape == (4,)
     assert next_batch["action_offsets"][-1] == len(next_batch["action_features"])
