@@ -51,6 +51,12 @@ Terminal marble labels are sorted by each player's progress toward home:
 marble IDs because seeded replays are fast enough when we need to debug exact
 state.
 
+## Board visualization
+
+![Board](Board.png)
+
+`Board.png` contains embedded Excalidraw metadata. Open it at https://excalidraw.com to interact with the board—you can move marbles to play out scenarios visually.
+
 ## Current house-rule model
 
 - Internal players are `0..3`; user-facing tools should show them as `P1..P4`.
