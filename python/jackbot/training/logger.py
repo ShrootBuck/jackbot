@@ -24,7 +24,7 @@ class RunLogger:
         step_delta = step - self.last_steps
         payload = {
             **metrics,
-            "system/ram_mb": psutil.Process().memory_info().rss / (1024 * 1024),
+            "resources/process_ram_mb": psutil.Process().memory_info().rss / (1024 * 1024),
             "throughput/steps_per_sec": step_delta / elapsed,
             **_accelerator_memory_metrics(),
         }
@@ -72,7 +72,14 @@ def make_logger(config: TrainConfig) -> RunLogger:
         mode=config.wandb_mode,
         config=config.to_dict(),
     )
+    _define_wandb_metrics(run)
     return RunLogger(run=run, started_at=time.perf_counter())
+
+
+def _define_wandb_metrics(run: Any) -> None:
+    run.define_metric("train/update")
+    for pattern in ("train/*", "arena/*", "opponent/*", "throughput/*", "resources/*"):
+        run.define_metric(pattern, step_metric="train/update")
 
 
 def _accelerator_memory_metrics() -> dict[str, float]:
@@ -85,11 +92,11 @@ def _accelerator_memory_metrics() -> dict[str, float]:
         return {}
 
     metrics = {
-        "system/mps_allocated_mb": torch.mps.current_allocated_memory() / (1024 * 1024),
+        "resources/mps_allocated_mb": torch.mps.current_allocated_memory() / (1024 * 1024),
     }
     driver_allocated = getattr(torch.mps, "driver_allocated_memory", None)
     if driver_allocated is not None:
-        metrics["system/mps_driver_allocated_mb"] = driver_allocated() / (1024 * 1024)
+        metrics["resources/mps_driver_allocated_mb"] = driver_allocated() / (1024 * 1024)
     return metrics
 
 
