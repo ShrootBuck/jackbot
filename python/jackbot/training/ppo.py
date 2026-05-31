@@ -10,7 +10,9 @@ from torch import nn
 
 from jackbot.training.config import TrainConfig
 from jackbot.training.env import to_tensors
+from jackbot.training.league import LeaguePool, league_actions
 from jackbot.training.model import JackbotNet
+from jackbot.training.policies import ModelPolicy
 
 
 @dataclass(slots=True)
@@ -27,6 +29,7 @@ class Rollout:
     team_rewards: torch.Tensor
     dones: torch.Tensor
     game_lengths: torch.Tensor
+    learn_mask: torch.Tensor
     action_starts: torch.Tensor
     action_ends: torch.Tensor
 
@@ -52,6 +55,7 @@ def collect_rollout(
     config: TrainConfig,
     device: torch.device,
     shaping_scale: float,
+    league: LeaguePool | None = None,
 ) -> tuple[Rollout, dict[str, np.ndarray]]:
     obs_parts: list[torch.Tensor] = []
     belief_parts: list[torch.Tensor] = []
@@ -64,17 +68,20 @@ def collect_rollout(
     done_parts: list[torch.Tensor] = []
     game_length_parts: list[torch.Tensor] = []
     acting_team_parts: list[torch.Tensor] = []
+    learn_mask_parts: list[torch.Tensor] = []
+    model_policy = ModelPolicy("current", model)
+    assignments = league.sample(config.num_envs, device) if league is not None else None
 
     model.eval()
     for _ in range(config.rollout_len):
         tensors = to_tensors(batch, device)
-        with torch.no_grad():
-            actions, log_probs, values = model.act(
-                tensors.obs,
-                tensors.action_features,
-                tensors.action_offsets,
-                deterministic=False,
-            )
+        actions, log_probs, values, learn_mask = league_actions(
+            model_policy,
+            tensors,
+            assignments,
+            league,
+            config.league_deterministic_opponents,
+        )
 
         next_batch = env.step(actions.cpu().numpy(), float(shaping_scale))
         next_tensors = to_tensors(next_batch, device)
@@ -90,6 +97,7 @@ def collect_rollout(
         done_parts.append(next_tensors.dones)
         game_length_parts.append(next_tensors.game_lengths)
         acting_team_parts.append(next_tensors.acting_teams)
+        learn_mask_parts.append(learn_mask)
 
         batch = next_batch
 
@@ -113,6 +121,7 @@ def collect_rollout(
         done_parts,
         game_length_parts,
         acting_team_parts,
+        learn_mask_parts,
         final_output.values,
         torch.remainder(final_tensors.current_players, 2),
         config.gamma,
@@ -129,8 +138,10 @@ def ppo_update(
 ) -> UpdateStats:
     model.train()
     stats = []
-    row_count = rollout.obs.shape[0]
-    indices = torch.randperm(row_count, device=rollout.obs.device)
+    learn_rows = torch.nonzero(rollout.learn_mask, as_tuple=False).flatten()
+    if learn_rows.numel() == 0:
+        raise RuntimeError("league rollout produced no learner-controlled rows")
+    indices = learn_rows[torch.randperm(learn_rows.numel(), device=rollout.obs.device)]
 
     for _ in range(config.ppo_epochs):
         for batch_indices in indices.split(config.minibatch_size):
@@ -210,6 +221,7 @@ def _assemble_rollout(
     done_parts: list[torch.Tensor],
     game_length_parts: list[torch.Tensor],
     acting_team_parts: list[torch.Tensor],
+    learn_mask_parts: list[torch.Tensor],
     bootstrap_values: torch.Tensor,
     bootstrap_acting_teams: torch.Tensor,
     gamma: float,
@@ -226,6 +238,7 @@ def _assemble_rollout(
     dones = torch.stack(done_parts, dim=0)
     game_lengths = torch.stack(game_length_parts, dim=0)
     acting_teams = torch.stack(acting_team_parts, dim=0)
+    learn_mask = torch.cat(learn_mask_parts, dim=0)
 
     values = torch.stack(value_parts, dim=0)
     returns, advantages = _team_gae_returns(
@@ -260,6 +273,7 @@ def _assemble_rollout(
         team_rewards=team_rewards,
         dones=dones,
         game_lengths=game_lengths,
+        learn_mask=learn_mask,
         action_starts=starts,
         action_ends=ends,
     )
@@ -350,6 +364,7 @@ def _slice_rollout(rollout: Rollout, rows: torch.Tensor) -> Rollout:
         team_rewards=rollout.team_rewards,
         dones=rollout.dones,
         game_lengths=rollout.game_lengths,
+        learn_mask=torch.ones_like(row_actions, dtype=torch.bool),
         action_starts=action_offsets[:-1],
         action_ends=action_offsets[1:],
     )

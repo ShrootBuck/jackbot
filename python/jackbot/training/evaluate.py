@@ -8,8 +8,8 @@ import torch
 
 from jackbot.training.config import TrainConfig
 from jackbot.training.device import choose_device
-from jackbot.training.env import TensorBatch, heuristic_actions, make_env, random_actions, to_tensors
 from jackbot.training.model import JackbotNet
+from jackbot.training.policies import BaselinePolicy, ModelPolicy, evaluate_match
 
 
 @dataclass(slots=True)
@@ -34,47 +34,16 @@ def evaluate_model(
     max_steps_per_game: int = 2_000,
 ) -> EvalResult:
     model.eval()
-    env = make_env(min(num_envs, games), seed)
-    batch = env.reset(seed)
-    even_wins = 0
-    odd_wins = 0
-    completed = 0
-    steps = 0
-
-    while completed < games and steps < games * max_steps_per_game:
-        tensors = to_tensors(batch, device)
-        model_actions, _, _ = model.act(
-            tensors.obs,
-            tensors.action_features,
-            tensors.action_offsets,
-            deterministic=True,
-        )
-        baseline = _baseline_actions(tensors, opponent)
-        model_turn = (tensors.current_players % 2) == 0
-        actions = torch.where(model_turn, model_actions, baseline)
-        batch = env.step(actions.cpu().numpy(), 0.0)
-        steps += int(tensors.current_players.numel())
-        winners = batch["winners"]
-        for winner in winners:
-            if winner == 0:
-                even_wins += 1
-                completed += 1
-            elif winner == 1:
-                odd_wins += 1
-                completed += 1
-            if completed >= games:
-                break
-
-    odd_wins += games - completed
-    return EvalResult(games=games, even_wins=even_wins, odd_wins=odd_wins)
-
-
-def _baseline_actions(tensors: TensorBatch, opponent: str) -> torch.Tensor:
-    if opponent == "random":
-        return random_actions(tensors)
-    if opponent == "heuristic":
-        return heuristic_actions(tensors)
-    raise ValueError(f"unknown opponent {opponent!r}")
+    result = evaluate_match(
+        ModelPolicy("model", model),
+        BaselinePolicy(opponent),
+        games,
+        seed,
+        device,
+        num_envs=num_envs,
+        max_steps_per_game=max_steps_per_game,
+    )
+    return EvalResult(games=games, even_wins=result.even_wins, odd_wins=result.odd_wins)
 
 
 def load_model(path: Path, device: torch.device) -> tuple[JackbotNet, TrainConfig]:

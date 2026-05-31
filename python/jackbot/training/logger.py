@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 import psutil
@@ -40,6 +41,24 @@ class RunLogger:
     def finish(self) -> None:
         if self.run is not None:
             self.run.finish()
+
+    def log_checkpoint(
+        self,
+        path: Path,
+        aliases: list[str],
+        metadata: dict[str, Any],
+    ) -> None:
+        if self.run is None:
+            return
+        import wandb
+
+        artifact = wandb.Artifact(
+            name=f"checkpoint-{self.run.id}-{path.stem}",
+            type="model",
+            metadata=metadata,
+        )
+        artifact.add_file(str(path))
+        self.run.log_artifact(artifact, aliases=aliases)
 
 
 def make_logger(config: TrainConfig) -> RunLogger:

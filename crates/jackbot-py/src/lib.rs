@@ -58,6 +58,12 @@ impl PlayGame {
         self.game.winner().map(Team::index)
     }
 
+    pub fn copy(&self) -> Self {
+        Self {
+            game: self.game.clone(),
+        }
+    }
+
     pub fn batch(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
         let arrays = snapshot_game(&self.game, 0)?;
         batch_to_dict(

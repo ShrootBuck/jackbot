@@ -39,6 +39,12 @@ Run the real training job:
 ./scripts/train.sh
 ```
 
+Run the stronger league-training job:
+
+```bash
+./scripts/train_god.sh
+```
+
 On the dedicated Mac, keep the machine awake:
 
 ```bash
@@ -55,6 +61,18 @@ Evaluate the best checkpoint:
 
 ```bash
 ./scripts/eval.sh
+```
+
+Run the side-swapped gauntlet evaluator:
+
+```bash
+./scripts/gauntlet.sh checkpoints/jackbot_best.pt
+```
+
+Rank the current legal moves with rollout search:
+
+```bash
+./scripts/search.sh checkpoints/jackbot_best.pt --seed 1
 ```
 
 Play against a checkpoint:
@@ -155,15 +173,33 @@ Default production config:
 - `hidden_size = 2048`
 - model size: `9,369,758` parameters
 - checkpoint every 25 updates or 15 minutes
-- arena eval every 25 updates
+- side-swapped arena eval every 25 updates
 
 Useful direct commands:
 
 ```bash
 uv run jackbot-train --smoke
 uv run jackbot-train --wandb-mode online
+uv run jackbot-train --league --eval-games 256 --wandb-mode online
 uv run jackbot-train --hidden-size 1024 --wandb-mode online
 uv run jackbot-eval checkpoints/jackbot_best.pt --games 64
+uv run jackbot-gauntlet checkpoints/jackbot_best.pt --games 512
+uv run jackbot-search checkpoints/jackbot_best.pt --rollouts 64
+```
+
+The "God model" path is not just longer PPO. The repo now supports:
+
+- side-swapped gauntlets against baselines and checkpoints, with 95% confidence
+  intervals
+- league rollouts where the learner trains against random, heuristic, prior
+  checkpoints, and current self-play
+- W&B model artifacts for saved checkpoints
+- rollout search for move ranking
+- JSONL search-target collection plus supervised distillation:
+
+```bash
+uv run jackbot-distill collect checkpoints/jackbot_best.pt data/search_targets.jsonl --positions 128
+uv run jackbot-distill train data/search_targets.jsonl checkpoints/jackbot_distilled.pt --base-checkpoint checkpoints/jackbot_best.pt
 ```
 
 Do not resume a checkpoint into a different `hidden_size`; the tensor shapes will

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
 
@@ -33,6 +33,19 @@ class TrainConfig:
     checkpoint_interval_seconds: float = 15 * 60
     eval_interval_updates: int = 25
     eval_games: int = 64
+    eval_opponents: list[str] = field(default_factory=lambda: ["random", "heuristic"])
+    eval_num_envs: int = 32
+    eval_max_steps_per_game: int = 2_000
+    league_enabled: bool = False
+    league_baselines: list[str] = field(default_factory=lambda: ["heuristic", "random"])
+    league_opponents: list[str] = field(default_factory=list)
+    league_auto_checkpoints: bool = True
+    league_max_checkpoints: int = 8
+    league_self_play_weight: float = 1.0
+    league_baseline_weight: float = 1.0
+    league_checkpoint_weight: float = 2.0
+    league_refresh_interval_updates: int = 25
+    league_deterministic_opponents: bool = True
     wandb_project: str = "jackbot"
     wandb_mode: str = "online"
     use_wandb: bool = True

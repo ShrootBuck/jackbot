@@ -12,9 +12,10 @@ from jackbot.training.checkpoint import load_checkpoint, save_checkpoint
 from jackbot.training.config import TrainConfig, shaping_scale
 from jackbot.training.device import choose_device
 from jackbot.training.env import make_env
-from jackbot.training.evaluate import evaluate_model
+from jackbot.training.league import LeaguePool
 from jackbot.training.logger import make_logger
 from jackbot.training.model import JackbotNet
+from jackbot.training.policies import ModelPolicy, gauntlet_metrics, policy_from_spec, run_gauntlet
 from jackbot.training.ppo import collect_rollout, ppo_update
 
 
@@ -45,14 +46,17 @@ def train(config: TrainConfig, resume: Path | None = None) -> None:
     env = make_env(config.num_envs, config.seed)
     batch = env.reset(config.seed)
     logger = make_logger(config)
+    league = LeaguePool(config, device) if config.league_enabled else None
     last_checkpoint = time.monotonic()
 
     try:
         for update in range(start_update, config.total_updates):
             lr = _learning_rate_for_update(config, update)
             _set_learning_rate(optimizer, lr)
+            if league is not None:
+                league.maybe_refresh(update)
             scale = shaping_scale(config, update)
-            rollout, batch = collect_rollout(env, model, batch, config, device, scale)
+            rollout, batch = collect_rollout(env, model, batch, config, device, scale, league)
             stats = ppo_update(model, optimizer, rollout, config)
             del rollout
             global_steps += config.num_envs * config.rollout_len
@@ -75,27 +79,22 @@ def train(config: TrainConfig, resume: Path | None = None) -> None:
             }
 
             if (update + 1) % config.eval_interval_updates == 0:
-                random_eval = evaluate_model(
-                    model,
+                arena = run_gauntlet(
+                    ModelPolicy("current", model),
+                    _arena_opponents(config, device),
                     config.eval_games,
-                    "random",
                     config.seed + 20_000 + update,
                     device,
+                    num_envs=config.eval_num_envs,
+                    max_steps_per_game=config.eval_max_steps_per_game,
                 )
-                heuristic_eval = evaluate_model(
-                    model,
-                    config.eval_games,
-                    "heuristic",
-                    config.seed + 30_000 + update,
-                    device,
-                )
-                metrics["arena/random_win_rate"] = random_eval.even_win_rate
-                metrics["arena/heuristic_win_rate"] = heuristic_eval.even_win_rate
-                score = (random_eval.even_win_rate + heuristic_eval.even_win_rate) / 2.0
+                metrics.update(gauntlet_metrics(arena))
+                score = arena.score
                 if score > best_score:
                     best_score = score
+                    best_path = config.checkpoint_dir / config.best_name
                     save_checkpoint(
-                        config.checkpoint_dir / config.best_name,
+                        best_path,
                         model,
                         optimizer,
                         config,
@@ -104,6 +103,11 @@ def train(config: TrainConfig, resume: Path | None = None) -> None:
                         best_score,
                         completed_games,
                     )
+                    logger.log_checkpoint(
+                        best_path,
+                        ["best", f"update-{update + 1}"],
+                        _checkpoint_metadata(config, update + 1, global_steps, best_score, completed_games),
+                    )
 
             should_save_by_update = (update + 1) % config.checkpoint_interval_updates == 0
             should_save_by_time = (
@@ -111,8 +115,9 @@ def train(config: TrainConfig, resume: Path | None = None) -> None:
                 or time.monotonic() - last_checkpoint >= config.checkpoint_interval_seconds
             )
             if should_save_by_update or should_save_by_time:
+                latest_path = config.checkpoint_dir / config.latest_name
                 save_checkpoint(
-                    config.checkpoint_dir / config.latest_name,
+                    latest_path,
                     model,
                     optimizer,
                     config,
@@ -121,11 +126,17 @@ def train(config: TrainConfig, resume: Path | None = None) -> None:
                     best_score,
                     completed_games,
                 )
+                logger.log_checkpoint(
+                    latest_path,
+                    ["latest", f"update-{update + 1}"],
+                    _checkpoint_metadata(config, update + 1, global_steps, best_score, completed_games),
+                )
                 last_checkpoint = time.monotonic()
 
             if (update + 1) % config.milestone_interval_updates == 0:
+                milestone_path = config.checkpoint_dir / f"epoch_{update + 1:04d}.pt"
                 save_checkpoint(
-                    config.checkpoint_dir / f"epoch_{update + 1:04d}.pt",
+                    milestone_path,
                     model,
                     optimizer,
                     config,
@@ -133,6 +144,11 @@ def train(config: TrainConfig, resume: Path | None = None) -> None:
                     global_steps,
                     best_score,
                     completed_games,
+                )
+                logger.log_checkpoint(
+                    milestone_path,
+                    ["milestone", f"update-{update + 1}"],
+                    _checkpoint_metadata(config, update + 1, global_steps, best_score, completed_games),
                 )
 
             logger.log(metrics, global_steps)
@@ -162,6 +178,16 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--no-lr-anneal", action="store_true")
     parser.add_argument("--no-wandb", action="store_true")
     parser.add_argument("--wandb-mode", default=None)
+    parser.add_argument("--eval-games", type=int, default=None)
+    parser.add_argument("--eval-opponent", action="append", default=None)
+    parser.add_argument("--league", action="store_true")
+    parser.add_argument("--league-opponent", action="append", default=None)
+    parser.add_argument("--league-baselines", default=None)
+    parser.add_argument("--no-league-auto-checkpoints", action="store_true")
+    parser.add_argument("--league-max-checkpoints", type=int, default=None)
+    parser.add_argument("--league-self-play-weight", type=float, default=None)
+    parser.add_argument("--league-baseline-weight", type=float, default=None)
+    parser.add_argument("--league-checkpoint-weight", type=float, default=None)
     return parser.parse_args()
 
 
@@ -183,6 +209,26 @@ def config_from_args(args: argparse.Namespace) -> TrainConfig:
         config.use_wandb = False
     if args.wandb_mode is not None:
         config.wandb_mode = args.wandb_mode
+    if args.eval_games is not None:
+        config.eval_games = args.eval_games
+    if args.eval_opponent is not None:
+        config.eval_opponents = args.eval_opponent
+    if args.league:
+        config.league_enabled = True
+    if args.league_opponent is not None:
+        config.league_opponents = args.league_opponent
+    if args.league_baselines is not None:
+        config.league_baselines = [item for item in args.league_baselines.split(",") if item]
+    if args.no_league_auto_checkpoints:
+        config.league_auto_checkpoints = False
+    if args.league_max_checkpoints is not None:
+        config.league_max_checkpoints = args.league_max_checkpoints
+    if args.league_self_play_weight is not None:
+        config.league_self_play_weight = args.league_self_play_weight
+    if args.league_baseline_weight is not None:
+        config.league_baseline_weight = args.league_baseline_weight
+    if args.league_checkpoint_weight is not None:
+        config.league_checkpoint_weight = args.league_checkpoint_weight
     return config
 
 
@@ -201,6 +247,29 @@ def _learning_rate_for_update(config: TrainConfig, update: int) -> float:
 def _set_learning_rate(optimizer: torch.optim.Optimizer, lr: float) -> None:
     for group in optimizer.param_groups:
         group["lr"] = lr
+
+
+def _arena_opponents(config: TrainConfig, device: torch.device):
+    return [policy_from_spec(spec, device) for spec in config.eval_opponents]
+
+
+def _checkpoint_metadata(
+    config: TrainConfig,
+    update: int,
+    global_steps: int,
+    best_score: float,
+    completed_games: int,
+) -> dict[str, object]:
+    return {
+        "update": update,
+        "global_steps": global_steps,
+        "best_score": best_score,
+        "completed_games": completed_games,
+        "hidden_size": config.hidden_size,
+        "league_enabled": config.league_enabled,
+        "eval_games_per_side": config.eval_games,
+        "eval_opponents": list(config.eval_opponents),
+    }
 
 
 if __name__ == "__main__":

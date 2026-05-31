@@ -34,7 +34,11 @@ impl MarbleLabels {
     }
 
     pub fn marble_label(&self, player: usize, marble_index: usize) -> String {
-        format!("P{} marble #{}", player + 1, self.labels[player][marble_index])
+        format!(
+            "P{} marble #{}",
+            player + 1,
+            self.labels[player][marble_index]
+        )
     }
 
     fn ordinal(&self, player: usize, marble_index: usize) -> usize {

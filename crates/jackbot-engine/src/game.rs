@@ -1469,7 +1469,11 @@ mod tests {
 
         let actions = game.legal_actions();
 
-        assert!(actions.iter().any(|a| matches!(a.kind, ActionKind::SkipNext)));
+        assert!(
+            actions
+                .iter()
+                .any(|a| matches!(a.kind, ActionKind::SkipNext))
+        );
         assert!(!actions.iter().any(|a| matches!(a.kind, ActionKind::Burn)));
     }
 
