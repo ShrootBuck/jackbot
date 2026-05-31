@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+from dataclasses import fields, replace
 import random
 import time
 from pathlib import Path
@@ -8,7 +9,7 @@ from pathlib import Path
 import numpy as np
 import torch
 
-from jackbot.training.checkpoint import load_checkpoint, save_checkpoint
+from jackbot.training.checkpoint import load_checkpoint, load_checkpoint_config, save_checkpoint
 from jackbot.training.config import TrainConfig, shaping_scale
 from jackbot.training.device import choose_device
 from jackbot.training.env import make_env
@@ -20,6 +21,9 @@ from jackbot.training.ppo import collect_rollout, ppo_update
 
 
 def train(config: TrainConfig, resume: Path | None = None) -> None:
+    if resume is not None:
+        config = _config_for_resume(load_checkpoint_config(resume), config)
+
     random.seed(config.seed)
     np.random.seed(config.seed)
     torch.manual_seed(config.seed)
@@ -34,13 +38,12 @@ def train(config: TrainConfig, resume: Path | None = None) -> None:
     best_score = float("-inf")
     completed_games = 0
     if resume is not None:
-        loaded_config, start_update, global_steps, best_score, completed_games = load_checkpoint(
+        _, start_update, global_steps, best_score, completed_games = load_checkpoint(
             resume,
             model,
             optimizer,
             device,
         )
-        config.hidden_size = loaded_config.hidden_size
         print(f"Resumed {resume} at update {start_update}, global_steps={global_steps}")
 
     env = make_env(config.num_envs, config.seed)
@@ -173,21 +176,47 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--updates", type=int, default=None)
     parser.add_argument("--num-envs", type=int, default=None)
     parser.add_argument("--rollout-len", type=int, default=None)
+    parser.add_argument("--ppo-epochs", type=int, default=None)
+    parser.add_argument("--minibatch-size", type=int, default=None)
+    parser.add_argument("--gamma", type=float, default=None)
+    parser.add_argument("--gae-lambda", type=float, default=None)
+    parser.add_argument("--clip", type=float, default=None)
+    parser.add_argument("--lr", type=float, default=None)
     parser.add_argument("--hidden-size", type=int, default=None)
+    parser.add_argument("--entropy-coef", type=float, default=None)
+    parser.add_argument("--value-coef", type=float, default=None)
+    parser.add_argument("--belief-coef", type=float, default=None)
+    parser.add_argument("--max-grad-norm", type=float, default=None)
+    parser.add_argument("--shaping-start", type=float, default=None)
+    parser.add_argument("--shaping-decay-fraction", type=float, default=None)
     parser.add_argument("--device", default=None)
+    parser.add_argument("--lr-anneal", action="store_true")
     parser.add_argument("--no-lr-anneal", action="store_true")
     parser.add_argument("--no-wandb", action="store_true")
     parser.add_argument("--wandb-mode", default=None)
+    parser.add_argument("--checkpoint-dir", type=Path, default=None)
+    parser.add_argument("--latest-name", default=None)
+    parser.add_argument("--best-name", default=None)
+    parser.add_argument("--checkpoint-interval-updates", type=int, default=None)
+    parser.add_argument("--milestone-interval-updates", type=int, default=None)
+    parser.add_argument("--checkpoint-interval-seconds", type=float, default=None)
+    parser.add_argument("--eval-interval-updates", type=int, default=None)
     parser.add_argument("--eval-games", type=int, default=None)
+    parser.add_argument("--eval-num-envs", type=int, default=None)
+    parser.add_argument("--eval-max-steps-per-game", type=int, default=None)
     parser.add_argument("--eval-opponent", action="append", default=None)
     parser.add_argument("--league", action="store_true")
     parser.add_argument("--league-opponent", action="append", default=None)
     parser.add_argument("--league-baselines", default=None)
+    parser.add_argument("--league-auto-checkpoints", action="store_true")
     parser.add_argument("--no-league-auto-checkpoints", action="store_true")
     parser.add_argument("--league-max-checkpoints", type=int, default=None)
     parser.add_argument("--league-self-play-weight", type=float, default=None)
     parser.add_argument("--league-baseline-weight", type=float, default=None)
     parser.add_argument("--league-checkpoint-weight", type=float, default=None)
+    parser.add_argument("--league-refresh-interval-updates", type=int, default=None)
+    parser.add_argument("--deterministic-league-opponents", action="store_true")
+    parser.add_argument("--stochastic-league-opponents", action="store_true")
     return parser.parse_args()
 
 
@@ -199,18 +228,62 @@ def config_from_args(args: argparse.Namespace) -> TrainConfig:
         config.num_envs = args.num_envs
     if args.rollout_len is not None:
         config.rollout_len = args.rollout_len
+    if args.ppo_epochs is not None:
+        config.ppo_epochs = args.ppo_epochs
+    if args.minibatch_size is not None:
+        config.minibatch_size = args.minibatch_size
+    if args.gamma is not None:
+        config.gamma = args.gamma
+    if args.gae_lambda is not None:
+        config.gae_lambda = args.gae_lambda
+    if args.clip is not None:
+        config.clip = args.clip
+    if args.lr is not None:
+        config.lr = args.lr
     if args.hidden_size is not None:
         config.hidden_size = args.hidden_size
+    if args.entropy_coef is not None:
+        config.entropy_coef = args.entropy_coef
+    if args.value_coef is not None:
+        config.value_coef = args.value_coef
+    if args.belief_coef is not None:
+        config.belief_coef = args.belief_coef
+    if args.max_grad_norm is not None:
+        config.max_grad_norm = args.max_grad_norm
+    if args.shaping_start is not None:
+        config.shaping_start = args.shaping_start
+    if args.shaping_decay_fraction is not None:
+        config.shaping_decay_fraction = args.shaping_decay_fraction
     if args.device is not None:
         config.device = args.device
+    if args.lr_anneal:
+        config.anneal_lr = True
     if args.no_lr_anneal:
         config.anneal_lr = False
     if args.no_wandb:
         config.use_wandb = False
     if args.wandb_mode is not None:
         config.wandb_mode = args.wandb_mode
+    if args.checkpoint_dir is not None:
+        config.checkpoint_dir = args.checkpoint_dir
+    if args.latest_name is not None:
+        config.latest_name = args.latest_name
+    if args.best_name is not None:
+        config.best_name = args.best_name
+    if args.checkpoint_interval_updates is not None:
+        config.checkpoint_interval_updates = args.checkpoint_interval_updates
+    if args.milestone_interval_updates is not None:
+        config.milestone_interval_updates = args.milestone_interval_updates
+    if args.checkpoint_interval_seconds is not None:
+        config.checkpoint_interval_seconds = args.checkpoint_interval_seconds
+    if args.eval_interval_updates is not None:
+        config.eval_interval_updates = args.eval_interval_updates
     if args.eval_games is not None:
         config.eval_games = args.eval_games
+    if args.eval_num_envs is not None:
+        config.eval_num_envs = args.eval_num_envs
+    if args.eval_max_steps_per_game is not None:
+        config.eval_max_steps_per_game = args.eval_max_steps_per_game
     if args.eval_opponent is not None:
         config.eval_opponents = args.eval_opponent
     if args.league:
@@ -219,6 +292,8 @@ def config_from_args(args: argparse.Namespace) -> TrainConfig:
         config.league_opponents = args.league_opponent
     if args.league_baselines is not None:
         config.league_baselines = [item for item in args.league_baselines.split(",") if item]
+    if args.league_auto_checkpoints:
+        config.league_auto_checkpoints = True
     if args.no_league_auto_checkpoints:
         config.league_auto_checkpoints = False
     if args.league_max_checkpoints is not None:
@@ -229,7 +304,33 @@ def config_from_args(args: argparse.Namespace) -> TrainConfig:
         config.league_baseline_weight = args.league_baseline_weight
     if args.league_checkpoint_weight is not None:
         config.league_checkpoint_weight = args.league_checkpoint_weight
+    if args.league_refresh_interval_updates is not None:
+        config.league_refresh_interval_updates = args.league_refresh_interval_updates
+    if args.deterministic_league_opponents:
+        config.league_deterministic_opponents = True
+    if args.stochastic_league_opponents:
+        config.league_deterministic_opponents = False
     return config
+
+
+def _config_for_resume(loaded: TrainConfig, requested: TrainConfig) -> TrainConfig:
+    default = TrainConfig()
+    merged = replace(loaded)
+    runtime_fields = {"device", "use_wandb", "wandb_mode", "wandb_project"}
+
+    for field in fields(TrainConfig):
+        name = field.name
+        requested_value = getattr(requested, name)
+        if name == "hidden_size":
+            if requested_value != default.hidden_size and requested_value != loaded.hidden_size:
+                raise ValueError(
+                    f"Cannot resume hidden_size={loaded.hidden_size} checkpoint "
+                    f"with hidden_size={requested_value}."
+                )
+            continue
+        if name in runtime_fields or requested_value != getattr(default, name):
+            setattr(merged, name, requested_value)
+    return merged
 
 
 def main() -> None:

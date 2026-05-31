@@ -253,7 +253,7 @@ def _assemble_rollout(
     )
     returns = returns.reshape(-1)
     advantages = advantages.reshape(-1)
-    advantages = (advantages - advantages.mean()) / advantages.std().clamp_min(1e-6)
+    advantages = _normalize_advantages(advantages, learn_mask)
 
     action_features, action_offsets = _concat_action_segments(action_feature_parts, offset_parts)
     starts = action_offsets[:-1]
@@ -277,6 +277,15 @@ def _assemble_rollout(
         action_starts=starts,
         action_ends=ends,
     )
+
+
+def _normalize_advantages(advantages: torch.Tensor, learn_mask: torch.Tensor) -> torch.Tensor:
+    learn_advantages = advantages[learn_mask]
+    if learn_advantages.numel() == 0:
+        return advantages
+    mean = learn_advantages.mean()
+    std = learn_advantages.std(unbiased=False).clamp_min(1e-6)
+    return (advantages - mean) / std
 
 
 def _team_gae_returns(

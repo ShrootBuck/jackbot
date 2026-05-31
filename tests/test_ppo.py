@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import torch
 
-from jackbot.training.ppo import _team_gae_returns
+from jackbot.training.ppo import _normalize_advantages, _team_gae_returns
 
 
 def test_team_gae_bootstraps_unfinished_rollout() -> None:
@@ -49,3 +49,12 @@ def test_team_gae_masks_terminal_bootstrap() -> None:
 
     assert torch.allclose(advantages, torch.tensor([[2.0]]))
     assert torch.allclose(returns, torch.tensor([[3.0]]))
+
+
+def test_advantage_normalization_uses_only_learner_rows() -> None:
+    advantages = torch.tensor([1.0, 3.0, 100.0])
+    learn_mask = torch.tensor([True, True, False])
+
+    normalized = _normalize_advantages(advantages, learn_mask)
+
+    assert torch.allclose(normalized[:2], torch.tensor([-1.0, 1.0]))

@@ -61,6 +61,11 @@ def load_checkpoint(
     )
 
 
+def load_checkpoint_config(path: Path, device: torch.device | str = "cpu") -> TrainConfig:
+    checkpoint = torch.load(path, map_location=device, weights_only=False)
+    return TrainConfig.from_dict(checkpoint["config"])
+
+
 def _restore_rng(state: dict[str, object]) -> None:
     if not state:
         return

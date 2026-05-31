@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import torch
 
-from jackbot.training.checkpoint import load_checkpoint, save_checkpoint
+from jackbot.training.checkpoint import load_checkpoint, load_checkpoint_config, save_checkpoint
 from jackbot.training.config import TrainConfig
 from jackbot.training.model import JackbotNet
 
@@ -34,3 +34,7 @@ def test_checkpoint_roundtrip(tmp_path) -> None:
     assert global_steps == 123
     assert best_score == 0.75
     assert completed_games == 42
+
+    metadata_config = load_checkpoint_config(path)
+    assert metadata_config.hidden_size == config.hidden_size
+    assert metadata_config.total_updates == config.total_updates

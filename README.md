@@ -24,22 +24,16 @@ Run all checks:
 Run a tiny end-to-end trainer smoke test:
 
 ```bash
-./scripts/smoke_train.sh
+uv run jackbot-train --smoke
 ```
 
 Run a short local training job with W&B disabled:
 
 ```bash
-./scripts/short_train.sh
+uv run jackbot-train --updates 10 --num-envs 64 --rollout-len 16 --no-wandb
 ```
 
-Run the real training job:
-
-```bash
-./scripts/train.sh
-```
-
-Run the stronger league-training job:
+Run the serious league-training job:
 
 ```bash
 ./scripts/train_god.sh
@@ -48,7 +42,7 @@ Run the stronger league-training job:
 On the dedicated Mac, keep the machine awake:
 
 ```bash
-caffeinate -dimsu ./scripts/train.sh
+caffeinate -dimsu ./scripts/train_god.sh
 ```
 
 Resume after a crash or reboot:
@@ -60,19 +54,19 @@ Resume after a crash or reboot:
 Evaluate the best checkpoint:
 
 ```bash
-./scripts/eval.sh
+uv run jackbot-eval checkpoints/jackbot_best.pt --games 64
 ```
 
 Run the side-swapped gauntlet evaluator:
 
 ```bash
-./scripts/gauntlet.sh checkpoints/jackbot_best.pt
+uv run jackbot-gauntlet checkpoints/jackbot_best.pt --games 512
 ```
 
 Rank the current legal moves with rollout search:
 
 ```bash
-./scripts/search.sh checkpoints/jackbot_best.pt --seed 1
+uv run jackbot-search checkpoints/jackbot_best.pt --seed 1 --rollouts 64
 ```
 
 Play against a checkpoint:
@@ -169,7 +163,7 @@ Default production config:
 
 - `num_envs = 512`
 - `rollout_len = 64`
-- `total_updates = 1000`
+- `total_updates = 1000` for `jackbot-train`, `3000` for `scripts/train_god.sh`
 - `hidden_size = 2048`
 - model size: `9,369,758` parameters
 - checkpoint every 25 updates or 15 minutes
@@ -181,7 +175,6 @@ Useful direct commands:
 uv run jackbot-train --smoke
 uv run jackbot-train --wandb-mode online
 uv run jackbot-train --league --eval-games 256 --wandb-mode online
-uv run jackbot-train --hidden-size 1024 --wandb-mode online
 uv run jackbot-eval checkpoints/jackbot_best.pt --games 64
 uv run jackbot-gauntlet checkpoints/jackbot_best.pt --games 512
 uv run jackbot-search checkpoints/jackbot_best.pt --rollouts 64
@@ -198,8 +191,8 @@ The "God model" path is not just longer PPO. The repo now supports:
 - JSONL search-target collection plus supervised distillation:
 
 ```bash
-uv run jackbot-distill collect checkpoints/jackbot_best.pt data/search_targets.jsonl --positions 128
-uv run jackbot-distill train data/search_targets.jsonl checkpoints/jackbot_distilled.pt --base-checkpoint checkpoints/jackbot_best.pt
+uv run jackbot-distill collect checkpoints/jackbot_best.pt data/search_targets.jsonl --positions 1024 --rollouts 32
+uv run jackbot-distill train data/search_targets.jsonl checkpoints/jackbot_distilled.pt --base-checkpoint checkpoints/jackbot_best.pt --epochs 5
 ```
 
 Do not resume a checkpoint into a different `hidden_size`; the tensor shapes will
@@ -228,6 +221,19 @@ Resume a specific checkpoint:
 ```bash
 ./scripts/resume.sh checkpoints/epoch_0050.pt
 ```
+
+## Scripts
+
+The script folder is intentionally small:
+
+- `bootstrap.sh`: rebuild/sync the local Python + Rust extension environment
+- `verify.sh`: Rust tests, clippy, and Python tests
+- `train_god.sh`: serious long-run training defaults
+- `resume.sh`: resume `jackbot_latest.pt` or a specific checkpoint
+- `common.sh`: shared environment setup for the other scripts
+
+Everything else should be a direct `uv run jackbot-...` command, not another
+one-line shell wrapper.
 
 ## Native Builds
 
