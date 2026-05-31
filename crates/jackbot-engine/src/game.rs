@@ -1046,6 +1046,9 @@ impl Game {
                     if next_slot >= self.rules.home_len {
                         return None;
                     }
+                    if self.home_slot_occupied(marbles, owner, next_slot, Some(moving_idx)) {
+                        return None;
+                    }
                     MarbleLocation::Home { slot: next_slot }
                 }
                 MarbleLocation::Track { distance } => {
@@ -1652,6 +1655,43 @@ mod tests {
                     owner: 0,
                     marble_index: 0,
                     steps: 1,
+                    ..
+                }
+            )
+        }));
+    }
+
+    #[test]
+    fn home_moves_cannot_jump_occupied_home_slots() {
+        let mut game = game_with_hand(Rank::Three);
+        game.marbles[0].location = MarbleLocation::Home { slot: 0 };
+        game.marbles[1].location = MarbleLocation::Home { slot: 1 };
+
+        assert!(!game.legal_actions().iter().any(|a| {
+            matches!(
+                a.kind,
+                ActionKind::Move {
+                    owner: 0,
+                    marble_index: 0,
+                    steps: 3,
+                    direction: Direction::Forward,
+                    ..
+                }
+            )
+        }));
+
+        let mut entry_game = game_with_hand(Rank::Three);
+        entry_game.marbles[0].location = MarbleLocation::Track { distance: 74 };
+        entry_game.marbles[1].location = MarbleLocation::Home { slot: 1 };
+
+        assert!(!entry_game.legal_actions().iter().any(|a| {
+            matches!(
+                a.kind,
+                ActionKind::Move {
+                    owner: 0,
+                    marble_index: 0,
+                    steps: 3,
+                    direction: Direction::Forward,
                     ..
                 }
             )
