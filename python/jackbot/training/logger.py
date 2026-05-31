@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -55,7 +56,7 @@ class RunLogger:
         artifact = wandb.Artifact(
             name=f"checkpoint-{self.run.id}-{path.stem}",
             type="model",
-            metadata=metadata,
+            metadata=_json_safe_metadata(metadata),
         )
         artifact.add_file(str(path))
         self.run.log_artifact(artifact, aliases=aliases)
@@ -90,3 +91,15 @@ def _accelerator_memory_metrics() -> dict[str, float]:
     if driver_allocated is not None:
         metrics["system/mps_driver_allocated_mb"] = driver_allocated() / (1024 * 1024)
     return metrics
+
+
+def _json_safe_metadata(value: Any) -> Any:
+    if isinstance(value, float):
+        return value if math.isfinite(value) else None
+    if isinstance(value, Path):
+        return str(value)
+    if isinstance(value, dict):
+        return {str(key): _json_safe_metadata(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple, set)):
+        return [_json_safe_metadata(item) for item in value]
+    return value
