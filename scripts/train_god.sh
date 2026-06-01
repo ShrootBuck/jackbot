@@ -10,7 +10,7 @@ uv run jackbot-train \
   --latest-name jackbot_latest.pt \
   --best-name jackbot_best.pt \
   --updates 3000 \
-  --num-envs 512 \
+  --num-envs 1024 \
   --rollout-len 64 \
   --ppo-epochs 3 \
   --minibatch-size 4096 \
@@ -29,7 +29,7 @@ uv run jackbot-train \
   --checkpoint-interval-updates 25 \
   --milestone-interval-updates 50 \
   --checkpoint-interval-seconds 900 \
-  --eval-interval-updates 25 \
+  --eval-interval-updates 50 \
   --eval-games 256 \
   --eval-num-envs 32 \
   --eval-max-steps-per-game 2000 \

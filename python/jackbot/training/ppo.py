@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import time
 from typing import Iterable
 
 import numpy as np
@@ -56,7 +57,12 @@ def collect_rollout(
     device: torch.device,
     shaping_scale: float,
     league: LeaguePool | None = None,
-) -> tuple[Rollout, dict[str, np.ndarray]]:
+) -> tuple[Rollout, dict[str, np.ndarray], dict[str, float]]:
+    started_at = time.perf_counter()
+    tensor_transfer_sec = 0.0
+    policy_action_sec = 0.0
+    action_to_cpu_sec = 0.0
+    env_step_sec = 0.0
     obs_parts: list[torch.Tensor] = []
     belief_parts: list[torch.Tensor] = []
     action_feature_parts: list[torch.Tensor] = []
@@ -74,7 +80,11 @@ def collect_rollout(
 
     model.eval()
     for _ in range(config.rollout_len):
+        transfer_started = time.perf_counter()
         tensors = to_tensors(batch, device)
+        tensor_transfer_sec += time.perf_counter() - transfer_started
+
+        action_started = time.perf_counter()
         actions, log_probs, values, learn_mask = league_actions(
             model_policy,
             tensors,
@@ -82,9 +92,19 @@ def collect_rollout(
             league,
             config.league_deterministic_opponents,
         )
+        policy_action_sec += time.perf_counter() - action_started
 
-        next_batch = env.step(actions.cpu().numpy(), float(shaping_scale))
+        action_copy_started = time.perf_counter()
+        action_array = actions.cpu().numpy()
+        action_to_cpu_sec += time.perf_counter() - action_copy_started
+
+        env_started = time.perf_counter()
+        next_batch = env.step(action_array, float(shaping_scale))
+        env_step_sec += time.perf_counter() - env_started
+
+        transfer_started = time.perf_counter()
         next_tensors = to_tensors(next_batch, device)
+        tensor_transfer_sec += time.perf_counter() - transfer_started
 
         obs_parts.append(tensors.obs)
         belief_parts.append(tensors.belief_targets)
@@ -101,14 +121,19 @@ def collect_rollout(
 
         batch = next_batch
 
+    transfer_started = time.perf_counter()
     final_tensors = to_tensors(batch, device)
+    tensor_transfer_sec += time.perf_counter() - transfer_started
     with torch.no_grad():
+        action_started = time.perf_counter()
         final_output = model(
             final_tensors.obs,
             final_tensors.action_features,
             final_tensors.action_offsets,
         )
+        policy_action_sec += time.perf_counter() - action_started
 
+    assemble_started = time.perf_counter()
     rollout = _assemble_rollout(
         obs_parts,
         belief_parts,
@@ -127,7 +152,15 @@ def collect_rollout(
         config.gamma,
         config.gae_lambda,
     )
-    return rollout, batch
+    assemble_sec = time.perf_counter() - assemble_started
+    return rollout, batch, {
+        "time/rollout_collect_sec": time.perf_counter() - started_at,
+        "time/tensor_transfer_sec": tensor_transfer_sec,
+        "time/policy_action_sec": policy_action_sec,
+        "time/action_to_cpu_sec": action_to_cpu_sec,
+        "time/env_step_sec": env_step_sec,
+        "time/rollout_assemble_sec": assemble_sec,
+    }
 
 
 def ppo_update(

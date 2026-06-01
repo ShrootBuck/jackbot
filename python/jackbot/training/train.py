@@ -54,13 +54,25 @@ def train(config: TrainConfig, resume: Path | None = None) -> None:
 
     try:
         for update in range(start_update, config.total_updates):
+            update_started = time.perf_counter()
             lr = _learning_rate_for_update(config, update)
             _set_learning_rate(optimizer, lr)
             if league is not None:
                 league.maybe_refresh(update)
             scale = shaping_scale(config, update)
-            rollout, batch = collect_rollout(env, model, batch, config, device, scale, league)
+            rollout, batch, timing_metrics = collect_rollout(
+                env,
+                model,
+                batch,
+                config,
+                device,
+                scale,
+                league,
+            )
+            ppo_started = time.perf_counter()
             stats = ppo_update(model, optimizer, rollout, config)
+            _sync_device(device)
+            timing_metrics["time/ppo_update_sec"] = time.perf_counter() - ppo_started
             del rollout
             global_steps += config.num_envs * config.rollout_len
             completed_games += stats.completed_games
@@ -79,9 +91,11 @@ def train(config: TrainConfig, resume: Path | None = None) -> None:
                 "train/shaping_scale": scale,
                 "train/lr": lr,
                 "train/update": update + 1,
+                **timing_metrics,
             }
 
             if (update + 1) % config.eval_interval_updates == 0:
+                eval_started = time.perf_counter()
                 arena = run_gauntlet(
                     ModelPolicy("current", model),
                     _arena_opponents(config, device),
@@ -91,11 +105,14 @@ def train(config: TrainConfig, resume: Path | None = None) -> None:
                     num_envs=config.eval_num_envs,
                     max_steps_per_game=config.eval_max_steps_per_game,
                 )
+                _sync_device(device)
+                metrics["time/eval_sec"] = time.perf_counter() - eval_started
                 metrics.update(gauntlet_metrics(arena))
                 score = arena.score
                 if score > best_score:
                     best_score = score
                     best_path = config.checkpoint_dir / config.best_name
+                    checkpoint_started = time.perf_counter()
                     save_checkpoint(
                         best_path,
                         model,
@@ -111,6 +128,9 @@ def train(config: TrainConfig, resume: Path | None = None) -> None:
                         ["best", f"update-{update + 1}"],
                         _checkpoint_metadata(config, update + 1, global_steps, best_score, completed_games),
                     )
+                    metrics["time/checkpoint_sec"] = metrics.get("time/checkpoint_sec", 0.0) + (
+                        time.perf_counter() - checkpoint_started
+                    )
 
             should_save_by_update = (update + 1) % config.checkpoint_interval_updates == 0
             should_save_by_time = (
@@ -119,6 +139,7 @@ def train(config: TrainConfig, resume: Path | None = None) -> None:
             )
             if should_save_by_update or should_save_by_time:
                 latest_path = config.checkpoint_dir / config.latest_name
+                checkpoint_started = time.perf_counter()
                 save_checkpoint(
                     latest_path,
                     model,
@@ -134,10 +155,14 @@ def train(config: TrainConfig, resume: Path | None = None) -> None:
                     ["latest", f"update-{update + 1}"],
                     _checkpoint_metadata(config, update + 1, global_steps, best_score, completed_games),
                 )
+                metrics["time/checkpoint_sec"] = metrics.get("time/checkpoint_sec", 0.0) + (
+                    time.perf_counter() - checkpoint_started
+                )
                 last_checkpoint = time.monotonic()
 
             if (update + 1) % config.milestone_interval_updates == 0:
                 milestone_path = config.checkpoint_dir / f"epoch_{update + 1:04d}.pt"
+                checkpoint_started = time.perf_counter()
                 save_checkpoint(
                     milestone_path,
                     model,
@@ -153,7 +178,11 @@ def train(config: TrainConfig, resume: Path | None = None) -> None:
                     ["milestone", f"update-{update + 1}"],
                     _checkpoint_metadata(config, update + 1, global_steps, best_score, completed_games),
                 )
+                metrics["time/checkpoint_sec"] = metrics.get("time/checkpoint_sec", 0.0) + (
+                    time.perf_counter() - checkpoint_started
+                )
 
+            metrics["time/update_total_sec"] = time.perf_counter() - update_started
             logger.log(metrics, global_steps)
     finally:
         save_checkpoint(
@@ -348,6 +377,13 @@ def _learning_rate_for_update(config: TrainConfig, update: int) -> float:
 def _set_learning_rate(optimizer: torch.optim.Optimizer, lr: float) -> None:
     for group in optimizer.param_groups:
         group["lr"] = lr
+
+
+def _sync_device(device: torch.device) -> None:
+    if device.type == "cuda":
+        torch.cuda.synchronize(device)
+    elif device.type == "mps":
+        torch.mps.synchronize()
 
 
 def _arena_opponents(config: TrainConfig, device: torch.device):

@@ -78,7 +78,7 @@ def make_logger(config: TrainConfig) -> RunLogger:
 
 def _define_wandb_metrics(run: Any) -> None:
     run.define_metric("train/update")
-    for pattern in ("train/*", "arena/*", "opponent/*", "throughput/*", "resources/*"):
+    for pattern in ("train/*", "arena/*", "opponent/*", "throughput/*", "resources/*", "time/*"):
         run.define_metric(pattern, step_metric="train/update")
 
 

@@ -2,9 +2,10 @@ use jackbot_engine::{
     ActionKind, Card, Direction, Game, LegalAction, MarbleLocation, MoveLeg, NUM_PLAYERS,
     Observation, Rules, StepEvents, StepOutcome, Team,
 };
+use pyo3::buffer::PyBuffer;
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
-use pyo3::types::{PyDict, PyModule};
+use pyo3::types::{PyByteArray, PyDict, PyModule};
 
 pub const OBS_SIZE: usize = 222;
 pub const ACTION_SIZE: usize = 96;
@@ -26,12 +27,14 @@ pub struct PlayGame {
 }
 
 struct BatchArrays {
-    obs: Vec<Vec<f32>>,
-    action_features: Vec<Vec<f32>>,
+    obs: Vec<f32>,
+    action_features: Vec<f32>,
     action_offsets: Vec<i64>,
     env_ids: Vec<i64>,
     current_players: Vec<i64>,
-    belief_targets: Vec<Vec<f32>>,
+    belief_targets: Vec<f32>,
+    env_count: usize,
+    action_count: usize,
 }
 
 #[pymethods]
@@ -70,7 +73,7 @@ impl PlayGame {
             py,
             arrays,
             vec![0.0],
-            vec![vec![0.0, 0.0]],
+            vec![0.0, 0.0],
             vec![false],
             vec![-1],
             vec![0],
@@ -150,7 +153,7 @@ impl BatchEnv {
             py,
             arrays,
             vec![0.0; self.envs.len()],
-            vec![vec![0.0, 0.0]; self.envs.len()],
+            vec![0.0; self.envs.len() * 2],
             vec![false; self.envs.len()],
             vec![-1; self.envs.len()],
             vec![0; self.envs.len()],
@@ -166,7 +169,7 @@ impl BatchEnv {
         action_indices: &Bound<'_, PyAny>,
         shaping_scale: f32,
     ) -> PyResult<Py<PyAny>> {
-        let action_indices: Vec<usize> = action_indices.call_method0("tolist")?.extract()?;
+        let action_indices = extract_action_indices(py, action_indices)?;
         if action_indices.len() != self.envs.len() {
             return Err(PyValueError::new_err(format!(
                 "expected {} action indices, got {}",
@@ -176,7 +179,7 @@ impl BatchEnv {
         }
 
         let mut rewards = Vec::with_capacity(self.envs.len());
-        let mut team_rewards = Vec::with_capacity(self.envs.len());
+        let mut team_rewards = Vec::with_capacity(self.envs.len() * 2);
         let mut dones = Vec::with_capacity(self.envs.len());
         let mut winners = Vec::with_capacity(self.envs.len());
         let mut acting_players = Vec::with_capacity(self.envs.len());
@@ -204,7 +207,7 @@ impl BatchEnv {
             let done = outcome.winner.is_some();
 
             rewards.push(scaled_team_rewards[acting_team]);
-            team_rewards.push(vec![scaled_team_rewards[0], scaled_team_rewards[1]]);
+            team_rewards.extend(scaled_team_rewards);
             dones.push(done);
             winners.push(winner);
             acting_players.push(acting_player as i64);
@@ -250,12 +253,13 @@ fn _jackbot(m: &Bound<'_, PyModule>) -> PyResult<()> {
 
 impl BatchEnv {
     fn snapshot(&self) -> PyResult<BatchArrays> {
-        let mut obs = Vec::with_capacity(self.envs.len());
+        let mut obs = Vec::with_capacity(self.envs.len() * OBS_SIZE);
         let mut action_features = Vec::new();
         let mut action_offsets = Vec::with_capacity(self.envs.len() + 1);
         let mut env_ids = Vec::new();
         let mut current_players = Vec::with_capacity(self.envs.len());
-        let mut belief_targets = Vec::with_capacity(self.envs.len());
+        let mut belief_targets = Vec::with_capacity(self.envs.len() * BELIEF_SIZE);
+        let mut action_count = 0;
 
         action_offsets.push(0);
         for (env_index, game) in self.envs.iter().enumerate() {
@@ -264,19 +268,20 @@ impl BatchEnv {
             let observation = game
                 .observation(player)
                 .map_err(|err| PyValueError::new_err(err.to_string()))?;
-            obs.push(encode_observation(&observation, game.rules()));
+            obs.extend(encode_observation(&observation, game.rules()));
 
             let legal_actions = game.legal_actions();
             for action in &legal_actions {
-                action_features.push(encode_action_features(player, action));
+                action_features.extend(encode_action_features(player, action));
                 env_ids.push(env_index as i64);
             }
-            action_offsets.push(action_features.len() as i64);
+            action_count += legal_actions.len();
+            action_offsets.push(action_count as i64);
 
             let targets = game
                 .hidden_hand_targets(player)
                 .map_err(|err| PyValueError::new_err(err.to_string()))?;
-            belief_targets.push(flatten_targets(targets));
+            belief_targets.extend(flatten_targets(targets));
         }
 
         Ok(BatchArrays {
@@ -286,6 +291,8 @@ impl BatchEnv {
             env_ids,
             current_players,
             belief_targets,
+            env_count: self.envs.len(),
+            action_count,
         })
     }
 }
@@ -299,17 +306,20 @@ fn snapshot_game(game: &Game, env_index: usize) -> PyResult<BatchArrays> {
     let targets = game
         .hidden_hand_targets(player)
         .map_err(|err| PyValueError::new_err(err.to_string()))?;
+    let action_count = legal_actions.len();
 
     Ok(BatchArrays {
-        obs: vec![encode_observation(&observation, game.rules())],
+        obs: encode_observation(&observation, game.rules()),
         action_features: legal_actions
             .iter()
-            .map(|action| encode_action_features(player, action))
+            .flat_map(|action| encode_action_features(player, action))
             .collect(),
-        action_offsets: vec![0, legal_actions.len() as i64],
-        env_ids: vec![env_index as i64; legal_actions.len()],
+        action_offsets: vec![0, action_count as i64],
+        env_ids: vec![env_index as i64; action_count],
         current_players: vec![player as i64],
-        belief_targets: vec![flatten_targets(targets)],
+        belief_targets: flatten_targets(targets),
+        env_count: 1,
+        action_count,
     })
 }
 
@@ -330,7 +340,7 @@ fn batch_to_dict(
     py: Python<'_>,
     arrays: BatchArrays,
     rewards: Vec<f32>,
-    team_rewards: Vec<Vec<f32>>,
+    team_rewards: Vec<f32>,
     dones: Vec<bool>,
     winners: Vec<i64>,
     acting_players: Vec<i64>,
@@ -338,47 +348,118 @@ fn batch_to_dict(
     game_lengths: Vec<i64>,
 ) -> PyResult<Py<PyAny>> {
     let dict = PyDict::new(py);
-    dict.set_item("obs", array_f32_2(py, arrays.obs)?)?;
-    dict.set_item("action_features", array_f32_2(py, arrays.action_features)?)?;
-    dict.set_item("action_offsets", array_i64_1(py, arrays.action_offsets)?)?;
-    dict.set_item("env_ids", array_i64_1(py, arrays.env_ids)?)?;
-    dict.set_item("current_players", array_i64_1(py, arrays.current_players)?)?;
-    dict.set_item("belief_targets", array_f32_2(py, arrays.belief_targets)?)?;
-    dict.set_item("rewards", array_f32_1(py, rewards)?)?;
-    dict.set_item("team_rewards", array_f32_2(py, team_rewards)?)?;
-    dict.set_item("dones", array_bool_1(py, dones)?)?;
-    dict.set_item("winners", array_i64_1(py, winners)?)?;
-    dict.set_item("acting_players", array_i64_1(py, acting_players)?)?;
-    dict.set_item("acting_teams", array_i64_1(py, acting_teams)?)?;
-    dict.set_item("game_lengths", array_i64_1(py, game_lengths)?)?;
+    let env_count = arrays.env_count;
+    let action_count = arrays.action_count;
+    dict.set_item("obs", numpy_array(py, arrays.obs, "float32", &[env_count, OBS_SIZE])?)?;
+    dict.set_item(
+        "action_features",
+        numpy_array(py, arrays.action_features, "float32", &[action_count, ACTION_SIZE])?,
+    )?;
+    dict.set_item(
+        "action_offsets",
+        numpy_array(py, arrays.action_offsets, "int64", &[env_count + 1])?,
+    )?;
+    dict.set_item("env_ids", numpy_array(py, arrays.env_ids, "int64", &[action_count])?)?;
+    dict.set_item(
+        "current_players",
+        numpy_array(py, arrays.current_players, "int64", &[env_count])?,
+    )?;
+    dict.set_item(
+        "belief_targets",
+        numpy_array(py, arrays.belief_targets, "float32", &[env_count, BELIEF_SIZE])?,
+    )?;
+    dict.set_item("rewards", numpy_array(py, rewards, "float32", &[env_count])?)?;
+    dict.set_item(
+        "team_rewards",
+        numpy_array(py, team_rewards, "float32", &[env_count, 2])?,
+    )?;
+    dict.set_item("dones", numpy_bool_array(py, dones, &[env_count])?)?;
+    dict.set_item("winners", numpy_array(py, winners, "int64", &[env_count])?)?;
+    dict.set_item(
+        "acting_players",
+        numpy_array(py, acting_players, "int64", &[env_count])?,
+    )?;
+    dict.set_item(
+        "acting_teams",
+        numpy_array(py, acting_teams, "int64", &[env_count])?,
+    )?;
+    dict.set_item(
+        "game_lengths",
+        numpy_array(py, game_lengths, "int64", &[env_count])?,
+    )?;
     Ok(dict.into_any().unbind())
 }
 
-fn numpy_array(
+fn numpy_array<T>(
     py: Python<'_>,
-    data: impl for<'py> IntoPyObject<'py>,
+    data: Vec<T>,
     dtype: &str,
+    shape: &[usize],
 ) -> PyResult<Py<PyAny>> {
     let numpy = PyModule::import(py, "numpy")?;
-    let array = numpy.call_method1("asarray", (data,))?;
-    let array = array.call_method1("astype", (dtype,))?;
-    Ok(array.unbind())
+    let bytes = unsafe {
+        std::slice::from_raw_parts(
+            data.as_ptr().cast::<u8>(),
+            data.len() * std::mem::size_of::<T>(),
+        )
+    };
+    let buffer = PyByteArray::new(py, bytes);
+    let array = numpy.call_method1("frombuffer", (buffer, dtype))?;
+    let reshaped = array.call_method1("reshape", (shape.to_vec(),))?;
+    Ok(reshaped.unbind())
 }
 
-fn array_f32_1(py: Python<'_>, data: Vec<f32>) -> PyResult<Py<PyAny>> {
-    numpy_array(py, data, "float32")
+fn numpy_bool_array(py: Python<'_>, data: Vec<bool>, shape: &[usize]) -> PyResult<Py<PyAny>> {
+    let bytes = data
+        .into_iter()
+        .map(u8::from)
+        .collect::<Vec<_>>();
+    numpy_array(py, bytes, "bool", shape)
 }
 
-fn array_f32_2(py: Python<'_>, data: Vec<Vec<f32>>) -> PyResult<Py<PyAny>> {
-    numpy_array(py, data, "float32")
-}
-
-fn array_i64_1(py: Python<'_>, data: Vec<i64>) -> PyResult<Py<PyAny>> {
-    numpy_array(py, data, "int64")
-}
-
-fn array_bool_1(py: Python<'_>, data: Vec<bool>) -> PyResult<Py<PyAny>> {
-    numpy_array(py, data, "bool")
+fn extract_action_indices(
+    py: Python<'_>,
+    action_indices: &Bound<'_, PyAny>,
+) -> PyResult<Vec<usize>> {
+    if let Ok(buffer) = PyBuffer::<i64>::get(action_indices) {
+        if let Some(slice) = buffer.as_slice(py) {
+            return slice
+                .iter()
+                .map(|value| {
+                    usize::try_from(value.get())
+                        .map_err(|_| PyValueError::new_err("action index must be non-negative"))
+                })
+                .collect();
+        }
+        return buffer
+            .to_vec(py)?
+            .into_iter()
+            .map(|value| {
+                usize::try_from(value)
+                    .map_err(|_| PyValueError::new_err("action index must be non-negative"))
+            })
+            .collect();
+    }
+    if let Ok(buffer) = PyBuffer::<i32>::get(action_indices) {
+        if let Some(slice) = buffer.as_slice(py) {
+            return slice
+                .iter()
+                .map(|value| {
+                    usize::try_from(value.get())
+                        .map_err(|_| PyValueError::new_err("action index must be non-negative"))
+                })
+                .collect();
+        }
+        return buffer
+            .to_vec(py)?
+            .into_iter()
+            .map(|value| {
+                usize::try_from(value)
+                    .map_err(|_| PyValueError::new_err("action index must be non-negative"))
+            })
+            .collect();
+    }
+    action_indices.extract()
 }
 
 fn encode_observation(observation: &Observation, rules: &Rules) -> Vec<f32> {
@@ -823,12 +904,13 @@ mod tests {
         let env = BatchEnv::new(3, 1).unwrap();
         let arrays = env.snapshot().unwrap();
 
-        assert_eq!(arrays.obs.len(), 3);
+        assert_eq!(arrays.obs.len(), 3 * OBS_SIZE);
         assert_eq!(arrays.action_offsets.len(), 4);
         assert_eq!(
             *arrays.action_offsets.last().unwrap() as usize,
-            arrays.action_features.len()
+            arrays.action_count
         );
-        assert_eq!(arrays.env_ids.len(), arrays.action_features.len());
+        assert_eq!(arrays.action_features.len(), arrays.action_count * ACTION_SIZE);
+        assert_eq!(arrays.env_ids.len(), arrays.action_count);
     }
 }
