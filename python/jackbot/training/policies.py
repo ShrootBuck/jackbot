@@ -119,10 +119,11 @@ def load_model_policy(
     device: torch.device,
     name: str | None = None,
 ) -> tuple[ModelPolicy, TrainConfig]:
-    checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
+    checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
     config = TrainConfig.from_dict(checkpoint["config"])
-    model = JackbotNet(config.hidden_size).to(device)
+    model = JackbotNet(config.hidden_size)
     model.load_state_dict(checkpoint["model"])
+    model.to(device)
     model.eval()
     return ModelPolicy(name=name or checkpoint_path.stem, model=model), config
 

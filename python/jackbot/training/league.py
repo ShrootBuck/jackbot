@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import gc
 import random
 from dataclasses import dataclass
 from pathlib import Path
@@ -24,6 +25,7 @@ class LeaguePool:
         self.opponents: list[Policy] = []
         self.weights: list[float] = []
         self._checkpoint_paths: set[Path] = set()
+        self._checkpoint_opponents: dict[Path, ModelPolicy] = {}
         self._last_refresh_update = -1
         self.refresh(force=True)
 
@@ -45,22 +47,28 @@ class LeaguePool:
 
         opponents: list[Policy] = []
         weights: list[float] = []
+        checkpoint_opponents: dict[Path, ModelPolicy] = {}
         for baseline in baseline_specs:
             if baseline:
                 opponents.append(BaselinePolicy(baseline))
                 weights.append(self.config.league_baseline_weight)
 
-        for path in checkpoint_paths:
-            try:
-                policy, _ = load_model_policy(path, self.device)
-            except (FileNotFoundError, RuntimeError, KeyError, ValueError):
-                continue
+        for path in sorted(checkpoint_paths):
+            policy = self._checkpoint_opponents.get(path)
+            if policy is None:
+                try:
+                    policy, _ = load_model_policy(path, self.device)
+                except (FileNotFoundError, RuntimeError, KeyError, ValueError):
+                    continue
+            checkpoint_opponents[path] = policy
             opponents.append(policy)
             weights.append(self.config.league_checkpoint_weight)
 
         self.opponents = opponents
         self.weights = weights
         self._checkpoint_paths = checkpoint_paths
+        self._checkpoint_opponents = checkpoint_opponents
+        _release_accelerator_cache(self.device)
 
     def sample(self, env_count: int, device: torch.device) -> LeagueAssignments:
         choices: list[int] = [-1]
@@ -97,6 +105,16 @@ class LeaguePool:
             )
             paths.update(candidates[: max(0, self.config.league_max_checkpoints)])
         return paths
+
+
+def _release_accelerator_cache(device: torch.device) -> None:
+    gc.collect()
+    if device.type == "mps":
+        empty_cache = getattr(torch.mps, "empty_cache", None)
+        if empty_cache is not None:
+            empty_cache()
+    elif device.type == "cuda":
+        torch.cuda.empty_cache()
 
 
 @torch.no_grad()
