@@ -44,3 +44,14 @@ def test_play_game_exposes_single_game_batch() -> None:
     assert batch["action_offsets"].tolist()[0] == 0
     assert batch["action_offsets"].tolist()[-1] == len(game.legal_action_labels())
     assert "P1 to act" in game.turn_text()
+
+
+def test_play_game_state_round_trip_and_action_details() -> None:
+    game = PlayGame(3)
+    state = game.state()
+    restored = PlayGame.from_state(state)
+
+    assert restored.state() == state
+    details = restored.legal_action_details()
+    assert len(details) == len(restored.legal_action_labels())
+    assert {"id", "card", "kind", "label"} <= set(details[0])

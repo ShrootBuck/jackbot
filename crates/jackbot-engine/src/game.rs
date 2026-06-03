@@ -49,6 +49,13 @@ struct Marble {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub struct MarbleState {
+    pub owner: usize,
+    pub index: usize,
+    pub location: MarbleLocation,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ObservedMarble {
     pub owner: usize,
     pub index: usize,
@@ -158,10 +165,24 @@ pub struct StepOutcome {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub struct GameState {
+    pub rng_state: u64,
+    pub deck: Vec<Card>,
+    pub discard: Vec<Card>,
+    pub hands: [Vec<Card>; NUM_PLAYERS],
+    pub marbles: Vec<MarbleState>,
+    pub current_player: usize,
+    pub turn_index: u64,
+    pub deal_round_index: usize,
+    pub winner: Option<Team>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum GameError {
     GameAlreadyFinished,
     InvalidPlayer(usize),
     InvalidActionId { id: usize, legal_count: usize },
+    InvalidState(String),
 }
 
 impl fmt::Display for GameError {
@@ -175,6 +196,7 @@ impl fmt::Display for GameError {
                     "invalid action id {id}; {legal_count} legal actions exist"
                 )
             }
+            GameError::InvalidState(message) => write!(f, "invalid game state: {message}"),
         }
     }
 }
@@ -237,6 +259,99 @@ impl Game {
         game
     }
 
+    pub fn from_state(state: GameState, rules: Rules) -> Result<Self, GameError> {
+        rules.validate();
+        if state.current_player >= NUM_PLAYERS {
+            return Err(GameError::InvalidState(format!(
+                "current_player {} is out of range",
+                state.current_player
+            )));
+        }
+        if state.marbles.len() != NUM_PLAYERS * MARBLES_PER_PLAYER {
+            return Err(GameError::InvalidState(format!(
+                "expected {} marbles, got {}",
+                NUM_PLAYERS * MARBLES_PER_PLAYER,
+                state.marbles.len()
+            )));
+        }
+
+        let mut seen_cards = [false; 52];
+        for card in state
+            .deck
+            .iter()
+            .chain(state.discard.iter())
+            .chain(state.hands.iter().flatten())
+        {
+            let id = card.id();
+            if seen_cards[id] {
+                return Err(GameError::InvalidState(format!(
+                    "card {card} appears more than once"
+                )));
+            }
+            seen_cards[id] = true;
+        }
+
+        let mut seen_marbles = [[false; MARBLES_PER_PLAYER]; NUM_PLAYERS];
+        let mut marbles = Vec::with_capacity(NUM_PLAYERS * MARBLES_PER_PLAYER);
+        for marble in state.marbles {
+            if marble.owner >= NUM_PLAYERS {
+                return Err(GameError::InvalidState(format!(
+                    "marble owner {} is out of range",
+                    marble.owner
+                )));
+            }
+            if marble.index >= MARBLES_PER_PLAYER {
+                return Err(GameError::InvalidState(format!(
+                    "marble index {} is out of range",
+                    marble.index
+                )));
+            }
+            if seen_marbles[marble.owner][marble.index] {
+                return Err(GameError::InvalidState(format!(
+                    "duplicate marble P{}m{}",
+                    marble.owner + 1,
+                    marble.index + 1
+                )));
+            }
+            match marble.location {
+                MarbleLocation::Base => {}
+                MarbleLocation::Track { distance } => {
+                    if distance >= rules.track_len {
+                        return Err(GameError::InvalidState(format!(
+                            "track distance {distance} is out of range"
+                        )));
+                    }
+                }
+                MarbleLocation::Home { slot } => {
+                    if slot >= rules.home_len {
+                        return Err(GameError::InvalidState(format!(
+                            "home slot {slot} is out of range"
+                        )));
+                    }
+                }
+            }
+            seen_marbles[marble.owner][marble.index] = true;
+            marbles.push(Marble {
+                owner: marble.owner,
+                index: marble.index,
+                location: marble.location,
+            });
+        }
+
+        Ok(Self {
+            rules,
+            rng: SmallRng::from_state(state.rng_state),
+            deck: state.deck,
+            discard: state.discard,
+            hands: state.hands,
+            marbles,
+            current_player: state.current_player,
+            turn_index: state.turn_index,
+            deal_round_index: state.deal_round_index,
+            winner: state.winner,
+        })
+    }
+
     pub fn rules(&self) -> &Rules {
         &self.rules
     }
@@ -251,6 +366,28 @@ impl Game {
 
     pub fn winner(&self) -> Option<Team> {
         self.winner
+    }
+
+    pub fn state(&self) -> GameState {
+        GameState {
+            rng_state: self.rng.state(),
+            deck: self.deck.clone(),
+            discard: self.discard.clone(),
+            hands: self.hands.clone(),
+            marbles: self
+                .marbles
+                .iter()
+                .map(|marble| MarbleState {
+                    owner: marble.owner,
+                    index: marble.index,
+                    location: marble.location,
+                })
+                .collect(),
+            current_player: self.current_player,
+            turn_index: self.turn_index,
+            deal_round_index: self.deal_round_index,
+            winner: self.winner,
+        }
     }
 
     pub fn legal_actions(&self) -> Vec<LegalAction> {
@@ -2054,6 +2191,55 @@ mod tests {
                 assert_eq!(target[card.id()], 0);
             }
         }
+    }
+
+    #[test]
+    fn card_ids_round_trip() {
+        for id in 0..52 {
+            assert_eq!(Card::from_id(id).unwrap().id(), id);
+        }
+        assert!(Card::from_id(52).is_none());
+    }
+
+    #[test]
+    fn game_state_round_trip_preserves_replay() {
+        let mut first = Game::new(9876, Rules::canonical_v1());
+        for _ in 0..8 {
+            let legal = first.legal_actions();
+            first.step(legal.len() / 2).unwrap();
+        }
+
+        let state = first.state();
+        let mut second = Game::from_state(state, Rules::canonical_v1()).unwrap();
+
+        assert_eq!(
+            first.observation(first.current_player()).unwrap(),
+            second.observation(second.current_player()).unwrap()
+        );
+        for _ in 0..12 {
+            let legal = first.legal_actions();
+            if legal.is_empty() {
+                break;
+            }
+            let action_id = legal.len() - 1;
+            let first_outcome = first.step(action_id).unwrap();
+            let second_outcome = second.step(action_id).unwrap();
+
+            assert_eq!(first_outcome, second_outcome);
+            assert_eq!(first.observed_marbles(), second.observed_marbles());
+            assert_eq!(first.current_player(), second.current_player());
+            assert_eq!(first.winner(), second.winner());
+        }
+    }
+
+    #[test]
+    fn game_state_rejects_duplicate_cards() {
+        let mut state = Game::new(1, Rules::canonical_v1()).state();
+        state.deck.push(state.hands[0][0]);
+
+        let error = Game::from_state(state, Rules::canonical_v1()).unwrap_err();
+
+        assert!(matches!(error, GameError::InvalidState(_)));
     }
 
     #[test]

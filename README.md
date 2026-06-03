@@ -69,6 +69,12 @@ Rank the current legal moves with rollout search:
 uv run jackbot-search checkpoints/jackbot_best.pt --seed 1 --rollouts 64
 ```
 
+Run the guided real-game advisor:
+
+```bash
+uv run jackbot-advisor checkpoints/jackbot_best.pt
+```
+
 Play against a checkpoint:
 
 ```bash
@@ -183,6 +189,7 @@ uv run jackbot-train --league --eval-games 256 --wandb-mode online
 uv run jackbot-eval checkpoints/jackbot_best.pt --games 64
 uv run jackbot-gauntlet checkpoints/jackbot_best.pt --games 512
 uv run jackbot-search checkpoints/jackbot_best.pt --rollouts 64
+uv run jackbot-advisor checkpoints/jackbot_best.pt
 ```
 
 The "God model" path is not just longer PPO. The repo now supports:
@@ -251,18 +258,17 @@ Run `./scripts/bootstrap.sh` after pulling new code or changing Rust files. It
 forces a reinstall of the local `jackbot` package so the compiled extension is
 rebuilt for the current Mac.
 
-## Advisor Roadmap
+## Real-Game Advisor
 
-The first practical UI should be a CLI/TUI, not a giant GUI. It should let a
-human enter visible game events as they happen:
+`jackbot-advisor` is the practical hidden-info table workflow. It asks for your
+seat and hand, prompts for each revealed card and visible move, auto-saves to
+`.jackbot-advisor.json`, and recommends moves from sampled hidden states:
 
 ```bash
-jackbot hand AS 7D 10H 4C
-jackbot play p2 burn 9S
-jackbot play p3 move p3m1 6
-jackbot advise
+uv run jackbot-advisor checkpoints/jackbot_best.pt --samples 16 --rollouts-per-sample 2
 ```
 
-The wrapper will keep the Rust engine state synchronized, then ask the trained
-model for ranked legal actions. Output should be phrased in human terms, like
-"play 7D, move P1 marble 2 forward 3, then P1 marble 0 forward 4."
+The advisor never asks for opponent hands. It tracks visible cards, hand sizes,
+discarded cards, and board state, then samples unknown hands/deck during rollout
+search. Move input uses stable marble labels like `P1m1`, `P2m4`, etc.; command
+prompts accept `undo` and `q`.

@@ -1,11 +1,11 @@
 use jackbot_engine::{
-    ActionKind, Card, Direction, Game, LegalAction, MarbleLocation, MoveLeg, NUM_PLAYERS,
-    Observation, Rules, StepEvents, StepOutcome, Team,
+    ActionKind, Card, Direction, Game, GameState, LegalAction, MarbleLocation, MarbleState,
+    MoveLeg, NUM_PLAYERS, Observation, Rules, StepEvents, StepOutcome, Team,
 };
 use pyo3::buffer::PyBuffer;
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
-use pyo3::types::{PyByteArray, PyDict, PyModule};
+use pyo3::types::{PyByteArray, PyDict, PyList, PyModule};
 
 pub const OBS_SIZE: usize = 222;
 pub const ACTION_SIZE: usize = 96;
@@ -45,6 +45,19 @@ impl PlayGame {
         Self {
             game: Game::new(seed, Rules::canonical_v1()),
         }
+    }
+
+    #[staticmethod]
+    pub fn from_state(state: &Bound<'_, PyAny>) -> PyResult<Self> {
+        let state = game_state_from_py(state)?;
+        Ok(Self {
+            game: Game::from_state(state, Rules::canonical_v1())
+                .map_err(|err| PyValueError::new_err(err.to_string()))?,
+        })
+    }
+
+    pub fn state(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
+        game_state_to_py(py, self.game.state())
     }
 
     #[getter]
@@ -107,6 +120,21 @@ impl PlayGame {
             .iter()
             .map(|action| (action.id, action_label(action, &labels)))
             .collect())
+    }
+
+    pub fn legal_action_details(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
+        let player = self.game.current_player();
+        let observation = self
+            .game
+            .observation(player)
+            .map_err(|err| PyValueError::new_err(err.to_string()))?;
+        let labels =
+            MarbleLabels::from_observation(&observation, self.game.rules().home_entry_distance());
+        let details = PyList::empty(py);
+        for action in self.game.legal_actions() {
+            details.append(action_detail(py, &action, &labels)?)?;
+        }
+        Ok(details.into_any().unbind())
     }
 
     pub fn step(&mut self, action_id: usize) -> PyResult<String> {
@@ -407,6 +435,206 @@ fn batch_to_dict(
         numpy_array(py, game_lengths, "int64", &[env_count])?,
     )?;
     Ok(dict.into_any().unbind())
+}
+
+fn game_state_from_py(state: &Bound<'_, PyAny>) -> PyResult<GameState> {
+    let dict = state.cast::<PyDict>()?;
+    let rng_state = optional_item(dict, "rng_state")?
+        .map(|value| value.extract::<u64>())
+        .transpose()?
+        .unwrap_or(1);
+    let deck = card_ids_to_cards(required_item(dict, "deck")?.extract()?)?;
+    let discard = card_ids_to_cards(required_item(dict, "discard")?.extract()?)?;
+    let raw_hands: Vec<Vec<usize>> = required_item(dict, "hands")?.extract()?;
+    if raw_hands.len() != NUM_PLAYERS {
+        return Err(PyValueError::new_err(format!(
+            "expected {NUM_PLAYERS} hands, got {}",
+            raw_hands.len()
+        )));
+    }
+    let hands_vec = raw_hands
+        .into_iter()
+        .map(card_ids_to_cards)
+        .collect::<PyResult<Vec<_>>>()?;
+    let hands: [Vec<Card>; NUM_PLAYERS] = hands_vec.try_into().map_err(|hands: Vec<_>| {
+        PyValueError::new_err(format!("expected {NUM_PLAYERS} hands, got {}", hands.len()))
+    })?;
+    let raw_marbles: Vec<(usize, usize, String, u8)> =
+        required_item(dict, "marbles")?.extract()?;
+    let marbles = raw_marbles
+        .into_iter()
+        .map(|(owner, index, kind, value)| {
+            let location = match kind.as_str() {
+                "base" => MarbleLocation::Base,
+                "track" => MarbleLocation::Track { distance: value },
+                "home" => MarbleLocation::Home { slot: value },
+                _ => {
+                    return Err(PyValueError::new_err(format!(
+                        "unknown marble location {kind:?}"
+                    )));
+                }
+            };
+            Ok(MarbleState {
+                owner,
+                index,
+                location,
+            })
+        })
+        .collect::<PyResult<Vec<_>>>()?;
+    let winner = optional_item(dict, "winner")?
+        .map(|value| value.extract::<Option<usize>>())
+        .transpose()?
+        .flatten()
+        .map(team_from_index)
+        .transpose()?;
+
+    Ok(GameState {
+        rng_state,
+        deck,
+        discard,
+        hands,
+        marbles,
+        current_player: required_item(dict, "current_player")?.extract()?,
+        turn_index: required_item(dict, "turn_index")?.extract()?,
+        deal_round_index: required_item(dict, "deal_round_index")?.extract()?,
+        winner,
+    })
+}
+
+fn game_state_to_py(py: Python<'_>, state: GameState) -> PyResult<Py<PyAny>> {
+    let dict = PyDict::new(py);
+    dict.set_item("rng_state", state.rng_state)?;
+    dict.set_item("deck", card_ids(&state.deck))?;
+    dict.set_item("discard", card_ids(&state.discard))?;
+    dict.set_item(
+        "hands",
+        state.hands.iter().map(|hand| card_ids(hand)).collect::<Vec<_>>(),
+    )?;
+    dict.set_item(
+        "marbles",
+        state
+            .marbles
+            .iter()
+            .map(|marble| {
+                let (kind, value) = location_parts(marble.location);
+                (marble.owner, marble.index, kind, value)
+            })
+            .collect::<Vec<_>>(),
+    )?;
+    dict.set_item("current_player", state.current_player)?;
+    dict.set_item("turn_index", state.turn_index)?;
+    dict.set_item("deal_round_index", state.deal_round_index)?;
+    dict.set_item("winner", state.winner.map(Team::index))?;
+    Ok(dict.into_any().unbind())
+}
+
+fn required_item<'py>(
+    dict: &Bound<'py, PyDict>,
+    key: &str,
+) -> PyResult<Bound<'py, PyAny>> {
+    dict.get_item(key)?
+        .ok_or_else(|| PyValueError::new_err(format!("state missing `{key}`")))
+}
+
+fn optional_item<'py>(
+    dict: &Bound<'py, PyDict>,
+    key: &str,
+) -> PyResult<Option<Bound<'py, PyAny>>> {
+    dict.get_item(key)
+}
+
+fn card_ids_to_cards(ids: Vec<usize>) -> PyResult<Vec<Card>> {
+    ids.into_iter()
+        .map(|id| {
+            Card::from_id(id).ok_or_else(|| PyValueError::new_err(format!("invalid card id {id}")))
+        })
+        .collect()
+}
+
+fn card_ids(cards: &[Card]) -> Vec<usize> {
+    cards.iter().map(|card| card.id()).collect()
+}
+
+fn team_from_index(index: usize) -> PyResult<Team> {
+    match index {
+        0 => Ok(Team::Even),
+        1 => Ok(Team::Odd),
+        _ => Err(PyValueError::new_err(format!("invalid team index {index}"))),
+    }
+}
+
+fn location_parts(location: MarbleLocation) -> (&'static str, u8) {
+    match location {
+        MarbleLocation::Base => ("base", 0),
+        MarbleLocation::Track { distance } => ("track", distance),
+        MarbleLocation::Home { slot } => ("home", slot),
+    }
+}
+
+fn action_detail<'py>(
+    py: Python<'py>,
+    action: &LegalAction,
+    labels: &MarbleLabels,
+) -> PyResult<Bound<'py, PyDict>> {
+    let dict = PyDict::new(py);
+    dict.set_item("id", action.id)?;
+    dict.set_item("card", action.card.map(Card::id))?;
+    dict.set_item("label", action_label(action, labels))?;
+    match &action.kind {
+        ActionKind::Enter {
+            owner,
+            marble_index,
+        } => {
+            dict.set_item("kind", "enter")?;
+            dict.set_item("owner", *owner)?;
+            dict.set_item("marble", *marble_index)?;
+        }
+        ActionKind::Move {
+            owner,
+            marble_index,
+            steps,
+            direction,
+            bulldozer,
+        } => {
+            dict.set_item("kind", "move")?;
+            dict.set_item("owner", *owner)?;
+            dict.set_item("marble", *marble_index)?;
+            dict.set_item("steps", *steps)?;
+            dict.set_item("direction", direction_label(*direction))?;
+            dict.set_item("bulldozer", *bulldozer)?;
+        }
+        ActionKind::SplitSeven { first, second } => {
+            dict.set_item("kind", "split")?;
+            dict.set_item("owner", first.owner)?;
+            dict.set_item("marble", first.marble_index)?;
+            dict.set_item("steps", first.steps)?;
+            dict.set_item("second_owner", second.owner)?;
+            dict.set_item("second_marble", second.marble_index)?;
+            dict.set_item("second_steps", second.steps)?;
+        }
+        ActionKind::Swap {
+            owner,
+            marble_index,
+            target_player,
+            target_marble_index,
+        } => {
+            dict.set_item("kind", "swap")?;
+            dict.set_item("owner", *owner)?;
+            dict.set_item("marble", *marble_index)?;
+            dict.set_item("target_owner", *target_player)?;
+            dict.set_item("target_marble", *target_marble_index)?;
+        }
+        ActionKind::SkipNext => {
+            dict.set_item("kind", "skip")?;
+        }
+        ActionKind::Burn => {
+            dict.set_item("kind", "burn")?;
+        }
+        ActionKind::PassNoCards => {
+            dict.set_item("kind", "pass")?;
+        }
+    }
+    Ok(dict)
 }
 
 fn numpy_array<T>(

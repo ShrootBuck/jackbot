@@ -13,6 +13,20 @@ impl SmallRng {
         Self { state }
     }
 
+    pub fn from_state(state: u64) -> Self {
+        Self {
+            state: if state == 0 {
+                0x9e37_79b9_7f4a_7c15
+            } else {
+                state
+            },
+        }
+    }
+
+    pub fn state(&self) -> u64 {
+        self.state
+    }
+
     pub fn next_u64(&mut self) -> u64 {
         let mut x = self.state;
         x ^= x >> 12;

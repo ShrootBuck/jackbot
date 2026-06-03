@@ -128,6 +128,36 @@ impl Card {
         };
         suit_offset + usize::from(self.rank.pip_value() - 1)
     }
+
+    pub fn from_id(id: usize) -> Option<Self> {
+        if id >= 52 {
+            return None;
+        }
+        let suit = match id / 13 {
+            0 => Suit::Clubs,
+            1 => Suit::Diamonds,
+            2 => Suit::Hearts,
+            3 => Suit::Spades,
+            _ => return None,
+        };
+        let rank = match id % 13 {
+            0 => Rank::Ace,
+            1 => Rank::Two,
+            2 => Rank::Three,
+            3 => Rank::Four,
+            4 => Rank::Five,
+            5 => Rank::Six,
+            6 => Rank::Seven,
+            7 => Rank::Eight,
+            8 => Rank::Nine,
+            9 => Rank::Ten,
+            10 => Rank::Jack,
+            11 => Rank::Queen,
+            12 => Rank::King,
+            _ => return None,
+        };
+        Some(Card::new(rank, suit))
+    }
 }
 
 impl fmt::Display for Card {
