@@ -13,7 +13,7 @@ def choose_device(requested: str = "auto") -> torch.device:
         return torch.device("cuda")
     if not torch.backends.mps.is_available():
         return torch.device("cpu")
-    return torch.device("mps") if _mps_beats_cpu() else torch.device("cpu")
+    return torch.device("cpu")
 
 
 @cache
