@@ -847,11 +847,11 @@ fn location_label(location: MarbleLocation, track_index: Option<u8>) -> String {
         MarbleLocation::Base => "base".to_string(),
         MarbleLocation::Track { distance: 0 } => {
             let absolute = track_index.expect("track marble should have track index");
-            format!("spawn/cw{absolute}")
+            format!("spawn/b{absolute}")
         }
         MarbleLocation::Track { distance } => {
             let absolute = track_index.expect("track marble should have track index");
-            format!("track d{distance}/cw{absolute}")
+            format!("track d{distance}/b{absolute}")
         }
         MarbleLocation::Home { slot } => format!("home{}", slot + 1),
     }
@@ -902,7 +902,7 @@ mod tests {
     }
 
     #[test]
-    fn observation_encoder_does_not_expose_clockwise_absolute_indexes() {
+    fn observation_encoder_does_not_expose_absolute_board_indexes() {
         let mut game = (1..100)
             .map(|seed| Game::new(seed, Rules::canonical_v1()))
             .find(|game| {

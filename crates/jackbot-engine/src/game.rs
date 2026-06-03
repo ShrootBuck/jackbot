@@ -1347,7 +1347,7 @@ impl Game {
     }
 
     fn track_index(&self, owner: usize, distance: u8) -> u8 {
-        // Absolute board indexes increase clockwise from P1's spawn.
+        // Absolute board indexes increase from P1's spawn in player turn order.
         (self.rules.spawn_index(owner) + distance) % self.rules.track_len
     }
 
@@ -1415,7 +1415,7 @@ mod tests {
     }
 
     #[test]
-    fn absolute_track_indexes_increase_clockwise() {
+    fn absolute_track_indexes_follow_turn_order() {
         let game = Game::new(7, Rules::canonical_v1());
 
         assert_eq!(game.track_index(0, 0), 0);
