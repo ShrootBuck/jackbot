@@ -134,11 +134,16 @@ https://excalidraw.com to move marbles around and inspect scenarios visually.
   clockwise.
 - Teams are `P1 + P3` vs `P2 + P4`.
 - The main track has 76 spaces.
+- Absolute board indexes are clockwise: `cw0` is `P1` spawn, `cw19` is `P2`
+  spawn, `cw38` is `P3` spawn, and `cw57` is `P4` spawn.
 - Spawn points are 19 spaces apart, meaning 18 spaces between spawn points, not
   counting the spawn spaces themselves.
 - Track distance is stored relative to each marble's owner. Distance `0` is
   that player's spawn. Distance `74` is the home-entry square two spaces behind
   spawn; moving forward from there enters home slot `0`.
+- Clockwise board coordinates are for human display and replay only. Training
+  observations intentionally do not include absolute clockwise indexes, so the
+  model learns from relative game state instead of the board drawing convention.
 - Home has 4 slots. Home movement is forward-only and exact-count.
 - A marble on its own spawn is a hard blockade: nobody can pass, kill, or swap
   it. Even the owner cannot use a Jack to swap it off spawn; it can only move by

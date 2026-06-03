@@ -254,11 +254,11 @@ fn location_label(location: MarbleLocation, track_index: Option<u8>) -> String {
         MarbleLocation::Base => "base".to_string(),
         MarbleLocation::Track { distance: 0 } => {
             let absolute = track_index.expect("track marble should have track index");
-            format!("spawn/abs{absolute}")
+            format!("spawn/cw{absolute}")
         }
         MarbleLocation::Track { distance } => {
             let absolute = track_index.expect("track marble should have track index");
-            format!("track d{distance}/abs{absolute}")
+            format!("track d{distance}/cw{absolute}")
         }
         MarbleLocation::Home { slot } => format!("home{}", slot + 1),
     }

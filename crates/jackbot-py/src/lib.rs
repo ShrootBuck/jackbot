@@ -350,25 +350,44 @@ fn batch_to_dict(
     let dict = PyDict::new(py);
     let env_count = arrays.env_count;
     let action_count = arrays.action_count;
-    dict.set_item("obs", numpy_array(py, arrays.obs, "float32", &[env_count, OBS_SIZE])?)?;
+    dict.set_item(
+        "obs",
+        numpy_array(py, arrays.obs, "float32", &[env_count, OBS_SIZE])?,
+    )?;
     dict.set_item(
         "action_features",
-        numpy_array(py, arrays.action_features, "float32", &[action_count, ACTION_SIZE])?,
+        numpy_array(
+            py,
+            arrays.action_features,
+            "float32",
+            &[action_count, ACTION_SIZE],
+        )?,
     )?;
     dict.set_item(
         "action_offsets",
         numpy_array(py, arrays.action_offsets, "int64", &[env_count + 1])?,
     )?;
-    dict.set_item("env_ids", numpy_array(py, arrays.env_ids, "int64", &[action_count])?)?;
+    dict.set_item(
+        "env_ids",
+        numpy_array(py, arrays.env_ids, "int64", &[action_count])?,
+    )?;
     dict.set_item(
         "current_players",
         numpy_array(py, arrays.current_players, "int64", &[env_count])?,
     )?;
     dict.set_item(
         "belief_targets",
-        numpy_array(py, arrays.belief_targets, "float32", &[env_count, BELIEF_SIZE])?,
+        numpy_array(
+            py,
+            arrays.belief_targets,
+            "float32",
+            &[env_count, BELIEF_SIZE],
+        )?,
     )?;
-    dict.set_item("rewards", numpy_array(py, rewards, "float32", &[env_count])?)?;
+    dict.set_item(
+        "rewards",
+        numpy_array(py, rewards, "float32", &[env_count])?,
+    )?;
     dict.set_item(
         "team_rewards",
         numpy_array(py, team_rewards, "float32", &[env_count, 2])?,
@@ -410,10 +429,7 @@ fn numpy_array<T>(
 }
 
 fn numpy_bool_array(py: Python<'_>, data: Vec<bool>, shape: &[usize]) -> PyResult<Py<PyAny>> {
-    let bytes = data
-        .into_iter()
-        .map(u8::from)
-        .collect::<Vec<_>>();
+    let bytes = data.into_iter().map(u8::from).collect::<Vec<_>>();
     numpy_array(py, bytes, "bool", shape)
 }
 
@@ -498,14 +514,12 @@ fn encode_observation(observation: &Observation, rules: &Rules) -> Vec<f32> {
                     values.extend([1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]);
                 }
                 MarbleLocation::Track { distance } => {
-                    let absolute = f32::from(marble.track_index.expect("track marble has index"))
-                        / f32::from(rules.track_len - 1);
                     values.extend([
                         0.0,
                         1.0,
                         0.0,
                         f32::from(distance) / f32::from(rules.track_len - 1),
-                        absolute,
+                        0.0,
                         0.0,
                         if distance == 0 { 1.0 } else { 0.0 },
                     ]);
@@ -833,11 +847,11 @@ fn location_label(location: MarbleLocation, track_index: Option<u8>) -> String {
         MarbleLocation::Base => "base".to_string(),
         MarbleLocation::Track { distance: 0 } => {
             let absolute = track_index.expect("track marble should have track index");
-            format!("spawn/abs{absolute}")
+            format!("spawn/cw{absolute}")
         }
         MarbleLocation::Track { distance } => {
             let absolute = track_index.expect("track marble should have track index");
-            format!("track d{distance}/abs{absolute}")
+            format!("track d{distance}/cw{absolute}")
         }
         MarbleLocation::Home { slot } => format!("home{}", slot + 1),
     }
@@ -888,6 +902,41 @@ mod tests {
     }
 
     #[test]
+    fn observation_encoder_does_not_expose_clockwise_absolute_indexes() {
+        let mut game = (1..100)
+            .map(|seed| Game::new(seed, Rules::canonical_v1()))
+            .find(|game| {
+                game.legal_actions()
+                    .iter()
+                    .any(|action| matches!(action.kind, ActionKind::Enter { .. }))
+            })
+            .expect("expected a seed with an opening enter action");
+        let action_id = game
+            .legal_actions()
+            .into_iter()
+            .find(|action| matches!(action.kind, ActionKind::Enter { .. }))
+            .unwrap()
+            .id;
+        game.step(action_id).unwrap();
+
+        let observation = game.observation(game.current_player()).unwrap();
+        let encoded = encode_observation(&observation, game.rules());
+        let marble_features_start = 52 + 52 + NUM_PLAYERS + 1 + 1;
+        let mut saw_track_marble = false;
+
+        for marble in 0..(NUM_PLAYERS * MARBLES_PER_PLAYER) {
+            let offset = marble_features_start + marble * 7;
+            let is_track = encoded[offset + 1];
+            if is_track == 1.0 {
+                saw_track_marble = true;
+                assert_eq!(encoded[offset + 4], 0.0);
+            }
+        }
+
+        assert!(saw_track_marble);
+    }
+
+    #[test]
     fn action_encoder_has_fixed_size() {
         let game = Game::new(1, Rules::canonical_v1());
         let legal_actions = game.legal_actions();
@@ -910,7 +959,10 @@ mod tests {
             *arrays.action_offsets.last().unwrap() as usize,
             arrays.action_count
         );
-        assert_eq!(arrays.action_features.len(), arrays.action_count * ACTION_SIZE);
+        assert_eq!(
+            arrays.action_features.len(),
+            arrays.action_count * ACTION_SIZE
+        );
         assert_eq!(arrays.env_ids.len(), arrays.action_count);
     }
 }

@@ -1347,6 +1347,7 @@ impl Game {
     }
 
     fn track_index(&self, owner: usize, distance: u8) -> u8 {
+        // Absolute board indexes increase clockwise from P1's spawn.
         (self.rules.spawn_index(owner) + distance) % self.rules.track_len
     }
 
@@ -1411,6 +1412,19 @@ mod tests {
         assert_eq!(rules.spawn_index(2), 38);
         assert_eq!(rules.spawn_index(3), 57);
         assert_eq!(rules.home_entry_distance(), 74);
+    }
+
+    #[test]
+    fn absolute_track_indexes_increase_clockwise() {
+        let game = Game::new(7, Rules::canonical_v1());
+
+        assert_eq!(game.track_index(0, 0), 0);
+        assert_eq!(game.track_index(0, 1), 1);
+        assert_eq!(game.track_index(1, 0), 19);
+        assert_eq!(game.track_index(1, 1), 20);
+        assert_eq!(game.track_index(2, 0), 38);
+        assert_eq!(game.track_index(3, 0), 57);
+        assert_eq!(game.track_index(3, 18), 75);
     }
 
     #[test]
