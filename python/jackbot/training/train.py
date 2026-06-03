@@ -37,6 +37,8 @@ def train(config: TrainConfig, resume: Path | None = None) -> None:
     global_steps = 0
     best_score = float("-inf")
     completed_games = 0
+    cumulative_winning_team_counts = [0, 0]
+    cumulative_winning_move_player_counts = [0, 0, 0, 0]
     if resume is not None:
         _, start_update, global_steps, best_score, completed_games = load_checkpoint(
             resume,
@@ -76,6 +78,10 @@ def train(config: TrainConfig, resume: Path | None = None) -> None:
             del rollout
             global_steps += config.num_envs * config.rollout_len
             completed_games += stats.completed_games
+            for team, count in enumerate(stats.winning_team_counts):
+                cumulative_winning_team_counts[team] += count
+            for player, count in enumerate(stats.winning_move_player_counts):
+                cumulative_winning_move_player_counts[player] += count
 
             metrics = {
                 "train/loss": stats.loss,
@@ -91,6 +97,12 @@ def train(config: TrainConfig, resume: Path | None = None) -> None:
                 "train/shaping_scale": scale,
                 "train/lr": lr,
                 "train/update": update + 1,
+                **_winner_metrics(
+                    stats.winning_team_counts,
+                    stats.winning_move_player_counts,
+                    cumulative_winning_team_counts,
+                    cumulative_winning_move_player_counts,
+                ),
                 **timing_metrics,
             }
 
@@ -388,6 +400,43 @@ def _learning_rate_for_update(config: TrainConfig, update: int) -> float:
 def _set_learning_rate(optimizer: torch.optim.Optimizer, lr: float) -> None:
     for group in optimizer.param_groups:
         group["lr"] = lr
+
+
+def _winner_metrics(
+    winning_team_counts: tuple[int, int],
+    winning_move_player_counts: tuple[int, int, int, int],
+    cumulative_winning_team_counts: list[int],
+    cumulative_winning_move_player_counts: list[int],
+) -> dict[str, float | int]:
+    metrics: dict[str, float | int] = {}
+    update_games = sum(winning_team_counts)
+    total_games = sum(cumulative_winning_team_counts)
+
+    for team, label in enumerate(("even_p1_p3", "odd_p2_p4")):
+        count = winning_team_counts[team]
+        cumulative_count = cumulative_winning_team_counts[team]
+        metrics[f"train/winning_team_{label}_count"] = count
+        metrics[f"train/winning_team_{label}_rate"] = (
+            count / update_games if update_games else float("nan")
+        )
+        metrics[f"train/winning_team_{label}_total"] = cumulative_count
+        metrics[f"train/winning_team_{label}_cumulative_rate"] = (
+            cumulative_count / total_games if total_games else float("nan")
+        )
+
+    for player, label in enumerate(("p1", "p2", "p3", "p4")):
+        count = winning_move_player_counts[player]
+        cumulative_count = cumulative_winning_move_player_counts[player]
+        metrics[f"train/winning_move_player_{label}_count"] = count
+        metrics[f"train/winning_move_player_{label}_rate"] = (
+            count / update_games if update_games else float("nan")
+        )
+        metrics[f"train/winning_move_player_{label}_total"] = cumulative_count
+        metrics[f"train/winning_move_player_{label}_cumulative_rate"] = (
+            cumulative_count / total_games if total_games else float("nan")
+        )
+
+    return metrics
 
 
 def _sync_device(device: torch.device) -> None:

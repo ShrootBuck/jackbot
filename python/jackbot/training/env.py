@@ -34,6 +34,7 @@ class TensorBatch:
     team_rewards: torch.Tensor
     dones: torch.Tensor
     winners: torch.Tensor
+    winning_move_players: torch.Tensor
     acting_players: torch.Tensor
     acting_teams: torch.Tensor
     game_lengths: torch.Tensor
@@ -64,6 +65,7 @@ def to_tensors(batch: dict[str, np.ndarray], device: torch.device) -> TensorBatc
         team_rewards=_float(batch["team_rewards"], device),
         dones=torch.as_tensor(batch["dones"], device=device, dtype=torch.bool),
         winners=_long(batch["winners"], device),
+        winning_move_players=_long(batch["winning_move_players"], device),
         acting_players=_long(batch["acting_players"], device),
         acting_teams=_long(batch["acting_teams"], device),
         game_lengths=_long(batch["game_lengths"], device),

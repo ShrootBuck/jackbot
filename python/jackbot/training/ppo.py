@@ -30,6 +30,8 @@ class Rollout:
     team_rewards: torch.Tensor
     dones: torch.Tensor
     game_lengths: torch.Tensor
+    winners: torch.Tensor
+    winning_move_players: torch.Tensor
     learn_mask: torch.Tensor
     action_starts: torch.Tensor
     action_ends: torch.Tensor
@@ -47,6 +49,8 @@ class UpdateStats:
     mean_reward: float
     completed_games: int
     game_length_mean: float
+    winning_team_counts: tuple[int, int]
+    winning_move_player_counts: tuple[int, int, int, int]
 
 
 def collect_rollout(
@@ -73,6 +77,8 @@ def collect_rollout(
     team_reward_parts: list[torch.Tensor] = []
     done_parts: list[torch.Tensor] = []
     game_length_parts: list[torch.Tensor] = []
+    winner_parts: list[torch.Tensor] = []
+    winning_move_player_parts: list[torch.Tensor] = []
     acting_team_parts: list[torch.Tensor] = []
     learn_mask_parts: list[torch.Tensor] = []
     model_policy = ModelPolicy("current", model)
@@ -116,6 +122,8 @@ def collect_rollout(
         team_reward_parts.append(next_tensors.team_rewards)
         done_parts.append(next_tensors.dones)
         game_length_parts.append(next_tensors.game_lengths)
+        winner_parts.append(next_tensors.winners)
+        winning_move_player_parts.append(next_tensors.winning_move_players)
         acting_team_parts.append(next_tensors.acting_teams)
         learn_mask_parts.append(learn_mask)
 
@@ -145,6 +153,8 @@ def collect_rollout(
         team_reward_parts,
         done_parts,
         game_length_parts,
+        winner_parts,
+        winning_move_player_parts,
         acting_team_parts,
         learn_mask_parts,
         final_output.values,
@@ -228,6 +238,16 @@ def ppo_update(
     game_length_mean = (
         float(completed_game_lengths.float().mean().item()) if completed_games else float("nan")
     )
+    completed_winners = rollout.winners[rollout.winners >= 0]
+    completed_winning_move_players = rollout.winning_move_players[
+        rollout.winning_move_players >= 0
+    ]
+    winning_team_counts = tuple(
+        int((completed_winners == team).sum().item()) for team in range(2)
+    )
+    winning_move_player_counts = tuple(
+        int((completed_winning_move_players == player).sum().item()) for player in range(4)
+    )
     return UpdateStats(
         loss=means[0],
         policy_loss=means[1],
@@ -239,6 +259,8 @@ def ppo_update(
         mean_reward=float(rollout.team_rewards.mean().item()),
         completed_games=completed_games,
         game_length_mean=game_length_mean,
+        winning_team_counts=winning_team_counts,
+        winning_move_player_counts=winning_move_player_counts,
     )
 
 
@@ -253,6 +275,8 @@ def _assemble_rollout(
     team_reward_parts: list[torch.Tensor],
     done_parts: list[torch.Tensor],
     game_length_parts: list[torch.Tensor],
+    winner_parts: list[torch.Tensor],
+    winning_move_player_parts: list[torch.Tensor],
     acting_team_parts: list[torch.Tensor],
     learn_mask_parts: list[torch.Tensor],
     bootstrap_values: torch.Tensor,
@@ -270,6 +294,8 @@ def _assemble_rollout(
     team_rewards = torch.stack(team_reward_parts, dim=0)
     dones = torch.stack(done_parts, dim=0)
     game_lengths = torch.stack(game_length_parts, dim=0)
+    winners = torch.stack(winner_parts, dim=0)
+    winning_move_players = torch.stack(winning_move_player_parts, dim=0)
     acting_teams = torch.stack(acting_team_parts, dim=0)
     learn_mask = torch.cat(learn_mask_parts, dim=0)
 
@@ -306,6 +332,8 @@ def _assemble_rollout(
         team_rewards=team_rewards,
         dones=dones,
         game_lengths=game_lengths,
+        winners=winners,
+        winning_move_players=winning_move_players,
         learn_mask=learn_mask,
         action_starts=starts,
         action_ends=ends,
@@ -406,6 +434,8 @@ def _slice_rollout(rollout: Rollout, rows: torch.Tensor) -> Rollout:
         team_rewards=rollout.team_rewards,
         dones=rollout.dones,
         game_lengths=rollout.game_lengths,
+        winners=rollout.winners,
+        winning_move_players=rollout.winning_move_players,
         learn_mask=torch.ones_like(row_actions, dtype=torch.bool),
         action_starts=action_offsets[:-1],
         action_ends=action_offsets[1:],

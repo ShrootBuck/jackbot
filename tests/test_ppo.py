@@ -3,6 +3,7 @@ from __future__ import annotations
 import torch
 
 from jackbot.training.ppo import _normalize_advantages, _team_gae_returns
+from jackbot.training.train import _winner_metrics
 
 
 def test_team_gae_bootstraps_unfinished_rollout() -> None:
@@ -58,3 +59,19 @@ def test_advantage_normalization_uses_only_learner_rows() -> None:
     normalized = _normalize_advantages(advantages, learn_mask)
 
     assert torch.allclose(normalized[:2], torch.tensor([-1.0, 1.0]))
+
+
+def test_winner_metrics_report_update_and_cumulative_rates() -> None:
+    metrics = _winner_metrics(
+        winning_team_counts=(3, 1),
+        winning_move_player_counts=(1, 0, 2, 1),
+        cumulative_winning_team_counts=[5, 5],
+        cumulative_winning_move_player_counts=[1, 2, 4, 3],
+    )
+
+    assert metrics["train/winning_team_even_p1_p3_count"] == 3
+    assert metrics["train/winning_team_even_p1_p3_rate"] == 0.75
+    assert metrics["train/winning_team_even_p1_p3_cumulative_rate"] == 0.5
+    assert metrics["train/winning_move_player_p3_count"] == 2
+    assert metrics["train/winning_move_player_p3_rate"] == 0.5
+    assert metrics["train/winning_move_player_p3_cumulative_rate"] == 0.4

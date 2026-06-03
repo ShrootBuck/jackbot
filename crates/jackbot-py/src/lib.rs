@@ -89,6 +89,7 @@ impl PlayGame {
             vec![0.0, 0.0],
             vec![false],
             vec![-1],
+            vec![-1],
             vec![0],
             vec![0],
             vec![0],
@@ -184,6 +185,7 @@ impl BatchEnv {
             vec![0.0; self.envs.len() * 2],
             vec![false; self.envs.len()],
             vec![-1; self.envs.len()],
+            vec![-1; self.envs.len()],
             vec![0; self.envs.len()],
             vec![0; self.envs.len()],
             vec![0; self.envs.len()],
@@ -210,6 +212,7 @@ impl BatchEnv {
         let mut team_rewards = Vec::with_capacity(self.envs.len() * 2);
         let mut dones = Vec::with_capacity(self.envs.len());
         let mut winners = Vec::with_capacity(self.envs.len());
+        let mut winning_move_players = Vec::with_capacity(self.envs.len());
         let mut acting_players = Vec::with_capacity(self.envs.len());
         let mut acting_teams = Vec::with_capacity(self.envs.len());
         let mut game_lengths = Vec::with_capacity(self.envs.len());
@@ -233,11 +236,13 @@ impl BatchEnv {
                 scaled_team_rewards(game.rules(), &outcome.events, outcome.winner, shaping_scale);
             let winner = outcome.winner.map_or(-1, |team| team.index() as i64);
             let done = outcome.winner.is_some();
+            let winning_move_player = if done { acting_player as i64 } else { -1 };
 
             rewards.push(scaled_team_rewards[acting_team]);
             team_rewards.extend(scaled_team_rewards);
             dones.push(done);
             winners.push(winner);
+            winning_move_players.push(winning_move_player);
             acting_players.push(acting_player as i64);
             acting_teams.push(acting_team as i64);
             game_lengths.push(if done {
@@ -262,6 +267,7 @@ impl BatchEnv {
             team_rewards,
             dones,
             winners,
+            winning_move_players,
             acting_players,
             acting_teams,
             game_lengths,
@@ -371,6 +377,7 @@ fn batch_to_dict(
     team_rewards: Vec<f32>,
     dones: Vec<bool>,
     winners: Vec<i64>,
+    winning_move_players: Vec<i64>,
     acting_players: Vec<i64>,
     acting_teams: Vec<i64>,
     game_lengths: Vec<i64>,
@@ -422,6 +429,10 @@ fn batch_to_dict(
     )?;
     dict.set_item("dones", numpy_bool_array(py, dones, &[env_count])?)?;
     dict.set_item("winners", numpy_array(py, winners, "int64", &[env_count])?)?;
+    dict.set_item(
+        "winning_move_players",
+        numpy_array(py, winning_move_players, "int64", &[env_count])?,
+    )?;
     dict.set_item(
         "acting_players",
         numpy_array(py, acting_players, "int64", &[env_count])?,
