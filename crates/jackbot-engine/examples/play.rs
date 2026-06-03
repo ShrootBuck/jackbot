@@ -77,5 +77,5 @@ fn print_help() {
     println!("  l         list legal moves again");
     println!("  h         show this help");
     println!("  q         quit");
-    println!("This is an engine-generated game, not a real-table sync tool yet.\n");
+    println!("This is an engine-generated game; use `jackbot-play` for checkpoint play.\n");
 }

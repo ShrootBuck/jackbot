@@ -22,11 +22,15 @@ class RunLogger:
         now = time.perf_counter()
         elapsed = max(1e-6, now - (self.last_time or self.started_at))
         step_delta = step - self.last_steps
+        process = psutil.Process()
+        memory = psutil.virtual_memory()
+        swap = psutil.swap_memory()
         payload = {
             **metrics,
-            "resources/process_ram_mb": psutil.Process().memory_info().rss / (1024 * 1024),
+            "resources/ram_mb": process.memory_info().rss / (1024 * 1024),
+            "resources/system_ram_percent": memory.percent,
+            "resources/swap_mb": swap.used / (1024 * 1024),
             "throughput/steps_per_sec": step_delta / elapsed,
-            **_accelerator_memory_metrics(),
         }
         self.last_steps = step
         self.last_time = now
@@ -80,24 +84,6 @@ def _define_wandb_metrics(run: Any) -> None:
     run.define_metric("train/update")
     for pattern in ("train/*", "arena/*", "opponent/*", "throughput/*", "resources/*", "time/*"):
         run.define_metric(pattern, step_metric="train/update")
-
-
-def _accelerator_memory_metrics() -> dict[str, float]:
-    try:
-        import torch
-    except ImportError:
-        return {}
-
-    if not torch.backends.mps.is_available():
-        return {}
-
-    metrics = {
-        "resources/mps_allocated_mb": torch.mps.current_allocated_memory() / (1024 * 1024),
-    }
-    driver_allocated = getattr(torch.mps, "driver_allocated_memory", None)
-    if driver_allocated is not None:
-        metrics["resources/mps_driver_allocated_mb"] = driver_allocated() / (1024 * 1024)
-    return metrics
 
 
 def _json_safe_metadata(value: Any) -> Any:

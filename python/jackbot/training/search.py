@@ -10,9 +10,9 @@ import torch
 
 from jackbot import PlayGame
 from jackbot.training.checkpoint import default_checkpoint_path
-from jackbot.training.device import choose_device
 from jackbot.training.env import to_tensors
 from jackbot.training.policies import ModelPolicy, Policy, load_model_policy, policy_from_spec
+from jackbot.training.runtime import training_device
 
 
 @dataclass(slots=True)
@@ -86,9 +86,9 @@ def search_policy_target(scores: list[ActionScore], temperature: float = 0.10) -
 def main() -> None:
     args = parse_args()
     checkpoint = args.checkpoint or default_checkpoint_path()
-    device = choose_device(args.device)
-    model_policy, _ = load_model_policy(checkpoint, device)
-    opponent = model_policy if args.opponent == "self" else policy_from_spec(args.opponent, device)
+    device = training_device()
+    model_policy, _ = load_model_policy(checkpoint)
+    opponent = model_policy if args.opponent == "self" else policy_from_spec(args.opponent)
     game = PlayGame(args.seed)
     scores = rank_actions(
         game,
@@ -117,7 +117,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--rollouts", type=int, default=32)
     parser.add_argument("--max-steps", type=int, default=500)
     parser.add_argument("--top", type=int, default=10)
-    parser.add_argument("--device", default="auto")
     parser.add_argument("--deterministic-rollouts", action="store_true")
     parser.add_argument("--json", type=Path, default=None)
     return parser.parse_args()

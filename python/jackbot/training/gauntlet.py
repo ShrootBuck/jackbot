@@ -7,23 +7,23 @@ from pathlib import Path
 from typing import Any
 
 from jackbot.training.checkpoint import default_checkpoint_path
-from jackbot.training.device import choose_device
 from jackbot.training.policies import (
     GauntletResult,
     load_model_policy,
     policy_from_spec,
     run_gauntlet,
 )
+from jackbot.training.runtime import training_device
 
 
 def main() -> None:
     args = parse_args()
-    device = choose_device(args.device)
-    opponents = [policy_from_spec(spec, device) for spec in args.opponent]
+    device = training_device()
+    opponents = [policy_from_spec(spec) for spec in args.opponent]
     results: list[GauntletResult] = []
 
     for index, checkpoint in enumerate(args.checkpoint):
-        candidate, _ = load_model_policy(checkpoint, device)
+        candidate, _ = load_model_policy(checkpoint)
         result = run_gauntlet(
             candidate,
             opponents,
@@ -58,7 +58,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--seed", type=int, default=50_000)
     parser.add_argument("--num-envs", type=int, default=64)
     parser.add_argument("--max-steps-per-game", type=int, default=2_000)
-    parser.add_argument("--device", default="auto")
     parser.add_argument("--stochastic", action="store_true", help="Sample model actions.")
     parser.add_argument("--json", type=Path, default=None, help="Write machine-readable results.")
     parser.add_argument("--print-json", action="store_true")

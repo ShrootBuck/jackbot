@@ -26,7 +26,6 @@ class TrainConfig:
     hidden_size: int = 2048
     shaping_start: float = 1.0
     shaping_decay_fraction: float = 0.40
-    device: str = "auto"
     checkpoint_dir: Path = Path("checkpoints")
     latest_name: str = "jackbot_latest.pt"
     best_name: str = "jackbot_best.pt"
@@ -90,6 +89,7 @@ class TrainConfig:
     @classmethod
     def from_dict(cls, data: dict[str, object]) -> "TrainConfig":
         config = dict(data)
+        config.pop("device", None)
         if "checkpoint_dir" in config:
             config["checkpoint_dir"] = Path(str(config["checkpoint_dir"]))
         return cls(**config)

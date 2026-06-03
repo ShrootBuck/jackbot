@@ -28,13 +28,13 @@ def test_league_refresh_reuses_loaded_checkpoint_opponents(monkeypatch) -> None:
     def fake_checkpoint_specs(self):
         return specs.pop(0)
 
-    def fake_load_model_policy(path, device):
+    def fake_load_model_policy(path):
         loaded.append(path)
         return _FakePolicy(path.name), config
 
     monkeypatch.setattr(league_module.LeaguePool, "_checkpoint_specs", fake_checkpoint_specs)
     monkeypatch.setattr(league_module, "load_model_policy", fake_load_model_policy)
-    monkeypatch.setattr(league_module, "_release_accelerator_cache", lambda device: None)
+    monkeypatch.setattr(league_module, "_release_stale_opponents", lambda: None)
 
     league = league_module.LeaguePool(config, torch.device("cpu"))
     league.refresh()

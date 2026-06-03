@@ -40,8 +40,8 @@ def test_load_model_policy_loads_checkpoint_on_cpu(monkeypatch) -> None:
     monkeypatch.setattr(policies_module.torch, "load", fake_load)
     monkeypatch.setattr(policies_module, "JackbotNet", _FakeModel)
 
-    policy, _ = load_model_policy(Path("checkpoint.pt"), torch.device("mps"))
+    policy, _ = load_model_policy(Path("checkpoint.pt"))
 
-    assert calls == ["cpu"]
-    assert policy.model.device == torch.device("mps")
+    assert calls == [torch.device("cpu")]
+    assert policy.model.device == torch.device("cpu")
     assert policy.model.evaluated is True

@@ -11,13 +11,13 @@ import torch
 
 from jackbot.training.checkpoint import load_checkpoint, load_checkpoint_config, save_checkpoint
 from jackbot.training.config import TrainConfig, shaping_scale
-from jackbot.training.device import choose_device
 from jackbot.training.env import make_env
 from jackbot.training.league import LeaguePool
 from jackbot.training.logger import make_logger
 from jackbot.training.model import JackbotNet
 from jackbot.training.policies import ModelPolicy, gauntlet_metrics, policy_from_spec, run_gauntlet
 from jackbot.training.ppo import collect_rollout, ppo_update
+from jackbot.training.runtime import training_device
 
 
 def train(config: TrainConfig, resume: Path | None = None) -> None:
@@ -28,8 +28,8 @@ def train(config: TrainConfig, resume: Path | None = None) -> None:
     np.random.seed(config.seed)
     torch.manual_seed(config.seed)
 
-    device = choose_device(config.device)
-    print(f"Using device: {device}")
+    device = training_device()
+    print("Using device: cpu")
     model = JackbotNet(config.hidden_size).to(device)
     optimizer = torch.optim.AdamW(model.parameters(), lr=config.lr)
 
@@ -44,7 +44,6 @@ def train(config: TrainConfig, resume: Path | None = None) -> None:
             resume,
             model,
             optimizer,
-            device,
         )
         print(f"Resumed {resume} at update {start_update}, global_steps={global_steps}")
 
@@ -73,7 +72,6 @@ def train(config: TrainConfig, resume: Path | None = None) -> None:
             )
             ppo_started = time.perf_counter()
             stats = ppo_update(model, optimizer, rollout, config)
-            _sync_device(device)
             timing_metrics["time/ppo_update_sec"] = time.perf_counter() - ppo_started
             del rollout
             global_steps += config.num_envs * config.rollout_len
@@ -110,14 +108,13 @@ def train(config: TrainConfig, resume: Path | None = None) -> None:
                 eval_started = time.perf_counter()
                 arena = run_gauntlet(
                     ModelPolicy("current", model),
-                    _arena_opponents(config, device),
+                    _arena_opponents(config),
                     config.eval_games,
                     config.seed + 20_000 + update,
                     device,
                     num_envs=config.eval_num_envs,
                     max_steps_per_game=config.eval_max_steps_per_game,
                 )
-                _sync_device(device)
                 metrics["time/eval_sec"] = time.perf_counter() - eval_started
                 metrics.update(gauntlet_metrics(arena))
                 score = arena.score
@@ -236,7 +233,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-grad-norm", type=float, default=None)
     parser.add_argument("--shaping-start", type=float, default=None)
     parser.add_argument("--shaping-decay-fraction", type=float, default=None)
-    parser.add_argument("--device", default=None)
     parser.add_argument("--lr-anneal", action="store_true")
     parser.add_argument("--no-lr-anneal", action="store_true")
     parser.add_argument("--no-wandb", action="store_true")
@@ -306,8 +302,6 @@ def config_from_args(args: argparse.Namespace) -> TrainConfig:
         config.shaping_start = args.shaping_start
     if args.shaping_decay_fraction is not None:
         config.shaping_decay_fraction = args.shaping_decay_fraction
-    if args.device is not None:
-        config.device = args.device
     if args.lr_anneal:
         config.anneal_lr = True
     if args.no_lr_anneal:
@@ -368,7 +362,7 @@ def config_from_args(args: argparse.Namespace) -> TrainConfig:
 def _config_for_resume(loaded: TrainConfig, requested: TrainConfig) -> TrainConfig:
     default = TrainConfig()
     merged = replace(loaded)
-    runtime_fields = {"device", "use_wandb", "wandb_mode", "wandb_project"}
+    runtime_fields = {"use_wandb", "wandb_mode", "wandb_project"}
 
     for field in fields(TrainConfig):
         name = field.name
@@ -439,15 +433,8 @@ def _winner_metrics(
     return metrics
 
 
-def _sync_device(device: torch.device) -> None:
-    if device.type == "cuda":
-        torch.cuda.synchronize(device)
-    elif device.type == "mps":
-        torch.mps.synchronize()
-
-
-def _arena_opponents(config: TrainConfig, device: torch.device):
-    return [policy_from_spec(spec, device) for spec in config.eval_opponents]
+def _arena_opponents(config: TrainConfig):
+    return [policy_from_spec(spec) for spec in config.eval_opponents]
 
 
 def _checkpoint_metadata(

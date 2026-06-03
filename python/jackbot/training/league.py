@@ -57,7 +57,7 @@ class LeaguePool:
             policy = self._checkpoint_opponents.get(path)
             if policy is None:
                 try:
-                    policy, _ = load_model_policy(path, self.device)
+                    policy, _ = load_model_policy(path)
                 except (FileNotFoundError, RuntimeError, KeyError, ValueError):
                     continue
             checkpoint_opponents[path] = policy
@@ -68,7 +68,7 @@ class LeaguePool:
         self.weights = weights
         self._checkpoint_paths = checkpoint_paths
         self._checkpoint_opponents = checkpoint_opponents
-        _release_accelerator_cache(self.device)
+        _release_stale_opponents()
 
     def sample(self, env_count: int, device: torch.device) -> LeagueAssignments:
         choices: list[int] = [-1]
@@ -107,14 +107,8 @@ class LeaguePool:
         return paths
 
 
-def _release_accelerator_cache(device: torch.device) -> None:
+def _release_stale_opponents() -> None:
     gc.collect()
-    if device.type == "mps":
-        empty_cache = getattr(torch.mps, "empty_cache", None)
-        if empty_cache is not None:
-            empty_cache()
-    elif device.type == "cuda":
-        torch.cuda.empty_cache()
 
 
 @torch.no_grad()

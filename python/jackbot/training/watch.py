@@ -7,9 +7,9 @@ import torch
 
 from jackbot import PlayGame
 from jackbot.training.checkpoint import default_checkpoint_path
-from jackbot.training.device import choose_device
 from jackbot.training.evaluate import load_model
 from jackbot.training.play import action_label, model_action
+from jackbot.training.runtime import training_device
 
 
 PLAYER_NAMES = ("P1", "P2", "P3", "P4")
@@ -23,15 +23,14 @@ TEAM_NAMES = {
 def watch_game(
     checkpoints: list[Path],
     seed: int,
-    device_name: str,
     pause: bool,
     max_turns: int | None,
     show_legal: bool,
 ) -> None:
-    device = choose_device(device_name)
+    device = training_device()
     models = []
     for checkpoint in checkpoints:
-        model, _ = load_model(checkpoint, device)
+        model, _ = load_model(checkpoint)
         model.eval()
         models.append(model)
 
@@ -86,7 +85,6 @@ def parse_args() -> argparse.Namespace:
         help="one checkpoint for all players, four checkpoints for P1 P2 P3 P4, or omitted for jackbot_best.pt",
     )
     parser.add_argument("--seed", type=int, default=1)
-    parser.add_argument("--device", default="auto")
     parser.add_argument("--no-pause", action="store_true", help="run without waiting after moves")
     parser.add_argument("--max-turns", type=int, default=None)
     parser.add_argument("--show-legal", action="store_true")
@@ -102,7 +100,6 @@ def main() -> None:
     watch_game(
         args.checkpoints,
         seed=args.seed,
-        device_name=args.device,
         pause=not args.no_pause,
         max_turns=args.max_turns,
         show_legal=args.show_legal,

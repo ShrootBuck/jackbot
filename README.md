@@ -225,7 +225,7 @@ Do not resume a checkpoint into a different `hidden_size`; the tensor shapes wil
 not match. If changing model width, start a fresh run.
 
 For long runs, keep the machine plugged in, awake, and on a hard surface with
-real airflow. RL training is sustained CPU/GPU load; carpet is not a cooling
+real airflow. RL training is sustained CPU load; carpet is not a cooling
 strategy, it is a slow-motion hardware crime scene.
 
 ## Checkpoints
@@ -265,8 +265,8 @@ one-line shell wrapper.
 
 The helper scripts source `scripts/common.sh`, which sets
 `RUSTFLAGS="-C target-cpu=native"`. That matters for the Rust engine and PyO3
-extension. It does not magically turn PyTorch into MLX; PyTorch still picks
-`mps` or `cpu` at runtime.
+extension. PyTorch is intentionally run on CPU for this project; the ragged
+legal-action tensors do not behave well on Apple's MPS backend over long runs.
 
 Run `./scripts/bootstrap.sh` after pulling new code or changing Rust files. It
 forces a reinstall of the local `jackbot` package so the compiled extension is

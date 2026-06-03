@@ -13,7 +13,6 @@ from jackbot.training.train import _config_for_resume, config_from_args, parse_a
 def test_tiny_smoke_train(tmp_path) -> None:
     config = TrainConfig.smoke()
     config.checkpoint_dir = tmp_path
-    config.device = "cpu"
     config.eval_games = 1
 
     train(config)
@@ -61,12 +60,11 @@ def test_gauntlet_defaults_to_best_checkpoint(monkeypatch, tmp_path) -> None:
 
 def test_resume_config_allows_explicit_safe_overrides() -> None:
     loaded = TrainConfig(total_updates=3_000, wandb_mode="online")
-    requested = TrainConfig(total_updates=4_000, device="cpu", wandb_mode="offline")
+    requested = TrainConfig(total_updates=4_000, wandb_mode="offline")
 
     merged = _config_for_resume(loaded, requested)
 
     assert merged.total_updates == 4_000
-    assert merged.device == "cpu"
     assert merged.wandb_mode == "offline"
 
 

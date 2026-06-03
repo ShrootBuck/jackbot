@@ -8,9 +8,9 @@ import torch
 
 from jackbot.training.checkpoint import default_checkpoint_path
 from jackbot.training.config import TrainConfig
-from jackbot.training.device import choose_device
 from jackbot.training.model import JackbotNet
 from jackbot.training.policies import BaselinePolicy, ModelPolicy, evaluate_match
+from jackbot.training.runtime import CPU_DEVICE, training_device
 
 
 @dataclass(slots=True)
@@ -47,10 +47,10 @@ def evaluate_model(
     return EvalResult(games=games, even_wins=result.even_wins, odd_wins=result.odd_wins)
 
 
-def load_model(path: Path, device: torch.device) -> tuple[JackbotNet, TrainConfig]:
-    checkpoint = torch.load(path, map_location=device, weights_only=False)
+def load_model(path: Path) -> tuple[JackbotNet, TrainConfig]:
+    checkpoint = torch.load(path, map_location=CPU_DEVICE, weights_only=False)
     config = TrainConfig.from_dict(checkpoint["config"])
-    model = JackbotNet(config.hidden_size).to(device)
+    model = JackbotNet(config.hidden_size).to(CPU_DEVICE)
     model.load_state_dict(checkpoint["model"])
     return model, config
 
@@ -60,12 +60,11 @@ def main() -> None:
     parser.add_argument("checkpoint", nargs="?", type=Path, default=None)
     parser.add_argument("--games", type=int, default=64)
     parser.add_argument("--seed", type=int, default=10_000)
-    parser.add_argument("--device", default="auto")
     args = parser.parse_args()
 
     checkpoint = args.checkpoint or default_checkpoint_path()
-    device = choose_device(args.device)
-    model, _ = load_model(checkpoint, device)
+    device = training_device()
+    model, _ = load_model(checkpoint)
     for opponent in ["random", "heuristic"]:
         result = evaluate_model(model, args.games, opponent, args.seed, device)
         print(

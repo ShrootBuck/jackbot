@@ -11,8 +11,8 @@ import torch
 
 from jackbot import PlayGame
 from jackbot.training.checkpoint import default_checkpoint_path
-from jackbot.training.device import choose_device
 from jackbot.training.policies import ModelPolicy, load_model_policy
+from jackbot.training.runtime import training_device
 from jackbot.training.search import rank_actions
 
 
@@ -712,7 +712,6 @@ def stable_detail_label(detail: dict[str, Any]) -> str:
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Real-game Jackbot advisor.")
     parser.add_argument("checkpoint", nargs="?", type=Path, default=None)
-    parser.add_argument("--device", default="auto")
     parser.add_argument("--session", type=Path, default=Path(".jackbot-advisor.json"))
     parser.add_argument("--samples", type=int, default=16)
     parser.add_argument("--rollouts-per-sample", type=int, default=2)
@@ -725,8 +724,8 @@ def parse_args() -> argparse.Namespace:
 def main() -> None:
     args = parse_args()
     checkpoint = args.checkpoint or default_checkpoint_path()
-    device = choose_device(args.device)
-    model_policy, _ = load_model_policy(checkpoint, device)
+    device = training_device()
+    model_policy, _ = load_model_policy(checkpoint)
     session = create_or_resume_session(args.session)
 
     print("Jackbot advisor. Commands inside prompts: `undo`, `q`.")

@@ -9,6 +9,7 @@ import torch
 
 from jackbot.training.config import DEFAULT_BEST_CHECKPOINT, TrainConfig
 from jackbot.training.model import JackbotNet
+from jackbot.training.runtime import CPU_DEVICE
 
 
 def default_checkpoint_path() -> Path:
@@ -51,7 +52,6 @@ def save_checkpoint(
             "python": random.getstate(),
             "numpy": np.random.get_state(),
             "torch": torch.get_rng_state(),
-            "mps": torch.mps.get_rng_state() if torch.backends.mps.is_available() else None,
         },
     }
     tmp = path.with_suffix(path.suffix + ".tmp")
@@ -63,9 +63,8 @@ def load_checkpoint(
     path: Path,
     model: JackbotNet,
     optimizer: torch.optim.Optimizer | None = None,
-    device: torch.device | str = "cpu",
 ) -> tuple[TrainConfig, int, int, float, int]:
-    checkpoint = torch.load(path, map_location=device, weights_only=False)
+    checkpoint = torch.load(path, map_location=CPU_DEVICE, weights_only=False)
     model.load_state_dict(checkpoint["model"])
     if optimizer is not None:
         optimizer.load_state_dict(checkpoint["optimizer"])
@@ -79,8 +78,8 @@ def load_checkpoint(
     )
 
 
-def load_checkpoint_config(path: Path, device: torch.device | str = "cpu") -> TrainConfig:
-    checkpoint = torch.load(path, map_location=device, weights_only=False)
+def load_checkpoint_config(path: Path) -> TrainConfig:
+    checkpoint = torch.load(path, map_location=CPU_DEVICE, weights_only=False)
     return TrainConfig.from_dict(checkpoint["config"])
 
 
@@ -93,11 +92,6 @@ def _restore_rng(state: dict[str, object]) -> None:
     if isinstance(torch_state, torch.Tensor):
         torch_state = torch_state.cpu()
     torch.set_rng_state(torch_state)
-    mps_state = state.get("mps")
-    if mps_state is not None and torch.backends.mps.is_available():
-        if isinstance(mps_state, torch.Tensor):
-            mps_state = mps_state.cpu()
-        torch.mps.set_rng_state(mps_state)
 
 
 def _newest_checkpoint(paths: Iterable[Path]) -> Path | None:

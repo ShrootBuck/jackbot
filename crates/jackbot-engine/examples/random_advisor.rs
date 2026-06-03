@@ -13,7 +13,7 @@ fn main() {
 
     println!("Jackbot random advisor");
     println!("Seed: {seed}");
-    println!("This is the future advisor shape, but the model is random.");
+    println!("Engine-only example; suggestions are random legal moves.");
     println!(
         "Press Enter to apply the suggested move, `l` to list all legal moves, or `q` to quit.\n"
     );

@@ -19,9 +19,6 @@ if [[ -x "${REPO_ROOT}/.venv/bin/python" ]]; then
   export PYO3_PYTHON="${PYO3_PYTHON:-${REPO_ROOT}/.venv/bin/python}"
 fi
 
-# Helps PyTorch survive occasional MPS operator gaps instead of hard-crashing.
-export PYTORCH_ENABLE_MPS_FALLBACK="${PYTORCH_ENABLE_MPS_FALLBACK:-1}"
-
 echo "repo: ${REPO_ROOT}"
 echo "RUSTFLAGS=${RUSTFLAGS}"
 echo "UV_PYTHON=${UV_PYTHON}"

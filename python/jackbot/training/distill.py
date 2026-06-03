@@ -12,11 +12,11 @@ import torch.nn.functional as F
 from jackbot import PlayGame
 from jackbot.training.checkpoint import save_checkpoint
 from jackbot.training.config import TrainConfig
-from jackbot.training.device import choose_device
 from jackbot.training.env import to_tensors
 from jackbot.training.model import JackbotNet
 from jackbot.training.ops import segment_env_ids
 from jackbot.training.policies import ModelPolicy, load_model_policy, policy_from_spec
+from jackbot.training.runtime import training_device
 from jackbot.training.search import example_from_search, rank_actions
 
 
@@ -34,7 +34,6 @@ def main() -> None:
     collect.add_argument("--max-steps", type=int, default=400)
     collect.add_argument("--temperature", type=float, default=0.10)
     collect.add_argument("--opponent", default="self")
-    collect.add_argument("--device", default="auto")
 
     train = subparsers.add_parser("train", help="Distill a checkpoint from JSONL targets.")
     train.add_argument("input", type=Path)
@@ -45,7 +44,6 @@ def main() -> None:
     train.add_argument("--batch-size", type=int, default=64)
     train.add_argument("--lr", type=float, default=1e-4)
     train.add_argument("--value-coef", type=float, default=0.25)
-    train.add_argument("--device", default="auto")
     args = parser.parse_args()
 
     if args.command == "collect":
@@ -55,9 +53,9 @@ def main() -> None:
 
 
 def collect_targets(args: argparse.Namespace) -> None:
-    device = choose_device(args.device)
-    model_policy, _ = load_model_policy(args.checkpoint, device)
-    opponent = model_policy if args.opponent == "self" else policy_from_spec(args.opponent, device)
+    device = training_device()
+    model_policy, _ = load_model_policy(args.checkpoint)
+    opponent = model_policy if args.opponent == "self" else policy_from_spec(args.opponent)
     args.output.parent.mkdir(parents=True, exist_ok=True)
 
     written = 0
@@ -89,10 +87,10 @@ def collect_targets(args: argparse.Namespace) -> None:
 
 
 def train_distillation(args: argparse.Namespace) -> None:
-    device = choose_device(args.device)
+    device = training_device()
     examples = _read_examples(args.input)
     if args.base_checkpoint is not None:
-        base_policy, config = load_model_policy(args.base_checkpoint, device)
+        base_policy, config = load_model_policy(args.base_checkpoint)
         model = base_policy.model
     else:
         config = TrainConfig(hidden_size=args.hidden_size)

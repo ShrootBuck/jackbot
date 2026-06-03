@@ -3,7 +3,6 @@ from __future__ import annotations
 import math
 from pathlib import Path
 
-from jackbot.training import logger as logger_module
 from jackbot.training.logger import RunLogger, _define_wandb_metrics, _json_safe_metadata
 
 
@@ -35,12 +34,7 @@ class _FakeRun:
         self.defined.append((args, kwargs))
 
 
-def test_logger_puts_custom_machine_metrics_under_resources(monkeypatch) -> None:
-    monkeypatch.setattr(
-        logger_module,
-        "_accelerator_memory_metrics",
-        lambda: {"resources/mps_allocated_mb": 12.5},
-    )
+def test_logger_puts_resource_metrics_under_resources() -> None:
     run = _FakeRun()
     logger = RunLogger(run=run, started_at=1.0, last_time=1.0)
 
@@ -48,8 +42,9 @@ def test_logger_puts_custom_machine_metrics_under_resources(monkeypatch) -> None
 
     payload, step = run.logged[0]
     assert step == 32
-    assert "resources/process_ram_mb" in payload
-    assert payload["resources/mps_allocated_mb"] == 12.5
+    assert "resources/ram_mb" in payload
+    assert "resources/system_ram_percent" in payload
+    assert "resources/swap_mb" in payload
     assert not any(key.startswith("system/") for key in payload)
 
 

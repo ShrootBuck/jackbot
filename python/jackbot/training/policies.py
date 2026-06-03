@@ -8,9 +8,9 @@ from typing import Protocol
 import torch
 
 from jackbot.training.config import TrainConfig
-from jackbot.training.device import choose_device
 from jackbot.training.env import TensorBatch, heuristic_actions, make_env, random_actions, to_tensors
 from jackbot.training.model import JackbotNet
+from jackbot.training.runtime import CPU_DEVICE
 
 
 class Policy(Protocol):
@@ -116,22 +116,21 @@ class GauntletResult:
 
 def load_model_policy(
     checkpoint_path: Path,
-    device: torch.device,
     name: str | None = None,
 ) -> tuple[ModelPolicy, TrainConfig]:
-    checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
+    checkpoint = torch.load(checkpoint_path, map_location=CPU_DEVICE, weights_only=False)
     config = TrainConfig.from_dict(checkpoint["config"])
     model = JackbotNet(config.hidden_size)
     model.load_state_dict(checkpoint["model"])
-    model.to(device)
+    model.to(CPU_DEVICE)
     model.eval()
     return ModelPolicy(name=name or checkpoint_path.stem, model=model), config
 
 
-def policy_from_spec(spec: str, device: torch.device) -> Policy:
+def policy_from_spec(spec: str) -> Policy:
     if spec in {"random", "heuristic"}:
         return BaselinePolicy(spec)
-    policy, _ = load_model_policy(Path(spec), device)
+    policy, _ = load_model_policy(Path(spec))
     return policy
 
 
@@ -259,7 +258,3 @@ def gauntlet_metrics(result: GauntletResult, prefix: str = "arena") -> dict[str,
         metrics[f"{prefix}/{key}_ci95"] = opponent_result.ci95_radius
         metrics[f"{prefix}/{key}_games"] = opponent_result.games
     return metrics
-
-
-def default_device(requested: str) -> torch.device:
-    return choose_device(requested)
