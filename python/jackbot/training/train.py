@@ -201,6 +201,12 @@ def train(config: TrainConfig, resume: Path | None = None) -> None:
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Train Jackbot with PPO self-play.")
     parser.add_argument("--smoke", action="store_true", help="Run the tiny smoke-training config.")
+    parser.add_argument(
+        "--profile",
+        choices=["default", "serious"],
+        default="default",
+        help="Training defaults to start from before applying explicit overrides.",
+    )
     parser.add_argument("--resume", type=Path, default=None)
     parser.add_argument("--updates", type=int, default=None)
     parser.add_argument("--num-envs", type=int, default=None)
@@ -250,7 +256,12 @@ def parse_args() -> argparse.Namespace:
 
 
 def config_from_args(args: argparse.Namespace) -> TrainConfig:
-    config = TrainConfig.smoke() if args.smoke else TrainConfig()
+    if args.smoke:
+        config = TrainConfig.smoke()
+    elif args.profile == "serious":
+        config = TrainConfig.serious()
+    else:
+        config = TrainConfig()
     if args.updates is not None:
         config.total_updates = args.updates
     if args.num_envs is not None:

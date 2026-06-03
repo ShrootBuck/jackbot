@@ -6,6 +6,7 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
+from jackbot.training.checkpoint import default_checkpoint_path
 from jackbot.training.device import choose_device
 from jackbot.training.policies import (
     GauntletResult,
@@ -46,7 +47,7 @@ def main() -> None:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run a side-swapped checkpoint gauntlet.")
-    parser.add_argument("checkpoint", nargs="+", type=Path)
+    parser.add_argument("checkpoint", nargs="*", type=Path)
     parser.add_argument(
         "--opponent",
         action="append",
@@ -62,6 +63,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--json", type=Path, default=None, help="Write machine-readable results.")
     parser.add_argument("--print-json", action="store_true")
     args = parser.parse_args()
+    if not args.checkpoint:
+        args.checkpoint = [default_checkpoint_path()]
     if args.opponent is None:
         args.opponent = ["random", "heuristic"]
     return args

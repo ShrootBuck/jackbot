@@ -9,6 +9,7 @@ from typing import Any
 import torch
 
 from jackbot import PlayGame
+from jackbot.training.checkpoint import default_checkpoint_path
 from jackbot.training.device import choose_device
 from jackbot.training.env import to_tensors
 from jackbot.training.policies import ModelPolicy, Policy, load_model_policy, policy_from_spec
@@ -84,8 +85,9 @@ def search_policy_target(scores: list[ActionScore], temperature: float = 0.10) -
 
 def main() -> None:
     args = parse_args()
+    checkpoint = args.checkpoint or default_checkpoint_path()
     device = choose_device(args.device)
-    model_policy, _ = load_model_policy(args.checkpoint, device)
+    model_policy, _ = load_model_policy(checkpoint, device)
     opponent = model_policy if args.opponent == "self" else policy_from_spec(args.opponent, device)
     game = PlayGame(args.seed)
     scores = rank_actions(
@@ -109,7 +111,7 @@ def main() -> None:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Rank legal moves with rollout search.")
-    parser.add_argument("checkpoint", type=Path)
+    parser.add_argument("checkpoint", nargs="?", type=Path, default=None)
     parser.add_argument("--seed", type=int, default=1)
     parser.add_argument("--opponent", default="self", help="self, random, heuristic, or checkpoint path.")
     parser.add_argument("--rollouts", type=int, default=32)

@@ -6,6 +6,7 @@ from pathlib import Path
 import torch
 
 from jackbot import PlayGame
+from jackbot.training.checkpoint import default_checkpoint_path
 from jackbot.training.device import choose_device
 from jackbot.training.env import to_tensors
 from jackbot.training.evaluate import load_model
@@ -114,7 +115,7 @@ def action_label(game: PlayGame, action: int) -> str:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Play a checkpoint in the terminal.")
-    parser.add_argument("checkpoint", type=Path)
+    parser.add_argument("checkpoint", nargs="?", type=Path, default=None)
     parser.add_argument("--seed", type=int, default=1)
     parser.add_argument("--device", default="auto")
     parser.add_argument(
@@ -133,8 +134,9 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = parse_args()
+    checkpoint = args.checkpoint or default_checkpoint_path()
     human_team = 1 if args.human_team == "odd" else 0
-    play_game(args.checkpoint, human_team, args.seed, args.device, args.pause_model)
+    play_game(checkpoint, human_team, args.seed, args.device, args.pause_model)
 
 
 if __name__ == "__main__":

@@ -6,6 +6,7 @@ from pathlib import Path
 import torch
 
 from jackbot import PlayGame
+from jackbot.training.checkpoint import default_checkpoint_path
 from jackbot.training.device import choose_device
 from jackbot.training.evaluate import load_model
 from jackbot.training.play import action_label, model_action
@@ -80,9 +81,9 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "checkpoints",
-        nargs="+",
+        nargs="*",
         type=Path,
-        help="one checkpoint for all players, or four checkpoints for P1 P2 P3 P4",
+        help="one checkpoint for all players, four checkpoints for P1 P2 P3 P4, or omitted for jackbot_best.pt",
     )
     parser.add_argument("--seed", type=int, default=1)
     parser.add_argument("--device", default="auto")
@@ -94,6 +95,8 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = parse_args()
+    if not args.checkpoints:
+        args.checkpoints = [default_checkpoint_path()]
     if len(args.checkpoints) not in {1, 4}:
         raise SystemExit("Pass either 1 checkpoint or exactly 4 checkpoints.")
     watch_game(

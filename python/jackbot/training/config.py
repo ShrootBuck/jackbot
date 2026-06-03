@@ -3,6 +3,8 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
+DEFAULT_BEST_CHECKPOINT = Path("checkpoints/jackbot_best.pt")
+
 
 @dataclass(slots=True)
 class TrainConfig:
@@ -65,6 +67,19 @@ class TrainConfig:
             eval_interval_updates=1,
             eval_games=4,
             use_wandb=False,
+        )
+
+    @classmethod
+    def serious(cls) -> "TrainConfig":
+        return cls(
+            num_envs=1024,
+            total_updates=3_000,
+            eval_interval_updates=50,
+            eval_games=256,
+            league_enabled=True,
+            league_baselines=["heuristic", "random"],
+            league_auto_checkpoints=True,
+            league_deterministic_opponents=True,
         )
 
     def to_dict(self) -> dict[str, object]:

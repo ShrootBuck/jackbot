@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 
 import pytest
 
-from jackbot.training.config import TrainConfig
-from jackbot.training.train import _config_for_resume, train
+from jackbot.training.config import DEFAULT_BEST_CHECKPOINT, TrainConfig
+from jackbot.training.gauntlet import parse_args as parse_gauntlet_args
+from jackbot.training.train import _config_for_resume, config_from_args, parse_args, train
 
 
 def test_tiny_smoke_train(tmp_path) -> None:
@@ -34,6 +36,27 @@ def test_resume_config_keeps_checkpoint_training_settings_by_default() -> None:
     assert merged.eval_games == 256
     assert merged.league_enabled is True
     assert merged.checkpoint_dir == Path("checkpoints/rulefix-run")
+
+
+def test_serious_profile_bakes_in_long_run_defaults(monkeypatch) -> None:
+    monkeypatch.setattr(sys, "argv", ["jackbot-train", "--profile", "serious"])
+
+    config = config_from_args(parse_args())
+
+    assert config.num_envs == 1024
+    assert config.total_updates == 3_000
+    assert config.eval_interval_updates == 50
+    assert config.eval_games == 256
+    assert config.league_enabled is True
+
+
+def test_gauntlet_defaults_to_best_checkpoint(monkeypatch, tmp_path) -> None:
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(sys, "argv", ["jackbot-gauntlet"])
+
+    args = parse_gauntlet_args()
+
+    assert args.checkpoint == [DEFAULT_BEST_CHECKPOINT]
 
 
 def test_resume_config_allows_explicit_safe_overrides() -> None:

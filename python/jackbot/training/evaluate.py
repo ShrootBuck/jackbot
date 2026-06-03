@@ -6,6 +6,7 @@ from pathlib import Path
 
 import torch
 
+from jackbot.training.checkpoint import default_checkpoint_path
 from jackbot.training.config import TrainConfig
 from jackbot.training.device import choose_device
 from jackbot.training.model import JackbotNet
@@ -56,14 +57,15 @@ def load_model(path: Path, device: torch.device) -> tuple[JackbotNet, TrainConfi
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Evaluate a Jackbot checkpoint.")
-    parser.add_argument("checkpoint", type=Path)
+    parser.add_argument("checkpoint", nargs="?", type=Path, default=None)
     parser.add_argument("--games", type=int, default=64)
     parser.add_argument("--seed", type=int, default=10_000)
     parser.add_argument("--device", default="auto")
     args = parser.parse_args()
 
+    checkpoint = args.checkpoint or default_checkpoint_path()
     device = choose_device(args.device)
-    model, _ = load_model(args.checkpoint, device)
+    model, _ = load_model(checkpoint, device)
     for opponent in ["random", "heuristic"]:
         result = evaluate_model(model, args.games, opponent, args.seed, device)
         print(

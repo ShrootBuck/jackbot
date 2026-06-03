@@ -1,13 +1,31 @@
 from __future__ import annotations
 
+from collections.abc import Iterable
 import random
 from pathlib import Path
 
 import numpy as np
 import torch
 
-from jackbot.training.config import TrainConfig
+from jackbot.training.config import DEFAULT_BEST_CHECKPOINT, TrainConfig
 from jackbot.training.model import JackbotNet
+
+
+def default_checkpoint_path() -> Path:
+    if DEFAULT_BEST_CHECKPOINT.exists():
+        return DEFAULT_BEST_CHECKPOINT
+
+    checkpoints_dir = DEFAULT_BEST_CHECKPOINT.parent
+    best = _newest_checkpoint(checkpoints_dir.glob("**/jackbot_best.pt"))
+    if best is not None:
+        return best
+
+    latest = checkpoints_dir / "jackbot_latest.pt"
+    if latest.exists():
+        return latest
+
+    nested_latest = _newest_checkpoint(checkpoints_dir.glob("**/jackbot_latest.pt"))
+    return nested_latest if nested_latest is not None else DEFAULT_BEST_CHECKPOINT
 
 
 def save_checkpoint(
@@ -75,3 +93,10 @@ def _restore_rng(state: dict[str, object]) -> None:
     mps_state = state.get("mps")
     if mps_state is not None and torch.backends.mps.is_available():
         torch.mps.set_rng_state(mps_state)
+
+
+def _newest_checkpoint(paths: Iterable[Path]) -> Path | None:
+    existing = [path for path in paths if path.exists()]
+    if not existing:
+        return None
+    return max(existing, key=lambda path: path.stat().st_mtime)

@@ -54,31 +54,31 @@ Resume after a crash or reboot:
 Evaluate the best checkpoint:
 
 ```bash
-uv run jackbot-eval checkpoints/jackbot_best.pt --games 64
+uv run jackbot-eval
 ```
 
 Run the side-swapped gauntlet evaluator:
 
 ```bash
-uv run jackbot-gauntlet checkpoints/jackbot_best.pt --games 512
+uv run jackbot-gauntlet
 ```
 
 Rank the current legal moves with rollout search:
 
 ```bash
-uv run jackbot-search checkpoints/jackbot_best.pt --seed 1 --rollouts 64
+uv run jackbot-search --seed 1 --rollouts 64
 ```
 
 Run the guided real-game advisor:
 
 ```bash
-uv run jackbot-advisor checkpoints/jackbot_best.pt
+uv run jackbot-advisor
 ```
 
 Play against a checkpoint:
 
 ```bash
-uv run jackbot-play checkpoints/jackbot_best.pt --device cpu
+uv run jackbot-play
 ```
 
 By default, you are P2+P4 and the model is P1+P3. Add `--human-team even` if
@@ -174,23 +174,37 @@ Default production config:
 
 - `num_envs = 512`
 - `rollout_len = 64`
-- `total_updates = 1000` for `jackbot-train`, `3000` for `scripts/train_god.sh`
+- `total_updates = 1000`
 - `hidden_size = 2048`
 - model size: `9,369,758` parameters
 - checkpoint every 25 updates or 15 minutes
 - side-swapped arena eval every 25 updates
 
+Serious long-run profile (`uv run jackbot-train --profile serious` or
+`./scripts/train_god.sh`):
+
+- `num_envs = 1024`
+- `total_updates = 3000`
+- side-swapped arena eval every 50 updates with 256 games
+- league training enabled against heuristic, random, self-play, and recent checkpoints
+
 Useful direct commands:
 
 ```bash
 uv run jackbot-train --smoke
-uv run jackbot-train --wandb-mode online
-uv run jackbot-train --league --eval-games 256 --wandb-mode online
-uv run jackbot-eval checkpoints/jackbot_best.pt --games 64
-uv run jackbot-gauntlet checkpoints/jackbot_best.pt --games 512
-uv run jackbot-search checkpoints/jackbot_best.pt --rollouts 64
-uv run jackbot-advisor checkpoints/jackbot_best.pt
+uv run jackbot-train
+uv run jackbot-train --profile serious
+uv run jackbot-eval
+uv run jackbot-gauntlet
+uv run jackbot-search --rollouts 64
+uv run jackbot-watch --seed 1
+uv run jackbot-play
+uv run jackbot-advisor
 ```
+
+Checkpoint tools default to `checkpoints/jackbot_best.pt`, falling back to the
+newest nested `jackbot_best.pt` under `checkpoints/`. Pass a checkpoint path
+only when you want a specific snapshot.
 
 The "God model" path is not just longer PPO. The repo now supports:
 
@@ -265,7 +279,7 @@ seat and hand, prompts for each revealed card and visible move, auto-saves to
 `.jackbot-advisor.json`, and recommends moves from sampled hidden states:
 
 ```bash
-uv run jackbot-advisor checkpoints/jackbot_best.pt --samples 16 --rollouts-per-sample 2
+uv run jackbot-advisor --samples 16 --rollouts-per-sample 2
 ```
 
 The advisor never asks for opponent hands. It tracks visible cards, hand sizes,
