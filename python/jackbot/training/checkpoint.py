@@ -89,7 +89,10 @@ def _restore_rng(state: dict[str, object]) -> None:
         return
     random.setstate(state["python"])
     np.random.set_state(state["numpy"])
-    torch.set_rng_state(state["torch"])
+    torch_state = state["torch"]
+    if isinstance(torch_state, torch.Tensor):
+        torch_state = torch_state.cpu()
+    torch.set_rng_state(torch_state)
     mps_state = state.get("mps")
     if mps_state is not None and torch.backends.mps.is_available():
         torch.mps.set_rng_state(mps_state)
