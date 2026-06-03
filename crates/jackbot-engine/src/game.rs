@@ -1892,6 +1892,43 @@ mod tests {
     }
 
     #[test]
+    fn protected_spawn_blocks_regular_and_bulldozer_paths() {
+        let mut game = Game::new(7, Rules::canonical_v1());
+        game.hands = std::array::from_fn(|_| Vec::new());
+        game.hands[3] = vec![card(Rank::Ten), card(Rank::King)];
+        game.current_player = 3;
+
+        game.marbles[4].location = MarbleLocation::Track { distance: 0 };
+        game.marbles[12].location = MarbleLocation::Track { distance: 34 };
+
+        let actions = game.legal_actions();
+        assert!(!actions.iter().any(|action| {
+            matches!(
+                action.kind,
+                ActionKind::Move {
+                    owner: 3,
+                    marble_index: 0,
+                    steps: 10,
+                    direction: Direction::Forward,
+                    bulldozer: false,
+                }
+            )
+        }));
+        assert!(!actions.iter().any(|action| {
+            matches!(
+                action.kind,
+                ActionKind::Move {
+                    owner: 3,
+                    marble_index: 0,
+                    steps: 13,
+                    direction: Direction::Forward,
+                    bulldozer: true,
+                }
+            )
+        }));
+    }
+
+    #[test]
     fn jack_cannot_swap_own_spawn_blockade() {
         let mut game = game_with_hand(Rank::Jack);
         game.marbles[0].location = MarbleLocation::Track { distance: 0 };

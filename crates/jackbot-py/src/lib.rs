@@ -459,8 +459,7 @@ fn game_state_from_py(state: &Bound<'_, PyAny>) -> PyResult<GameState> {
     let hands: [Vec<Card>; NUM_PLAYERS] = hands_vec.try_into().map_err(|hands: Vec<_>| {
         PyValueError::new_err(format!("expected {NUM_PLAYERS} hands, got {}", hands.len()))
     })?;
-    let raw_marbles: Vec<(usize, usize, String, u8)> =
-        required_item(dict, "marbles")?.extract()?;
+    let raw_marbles: Vec<(usize, usize, String, u8)> = required_item(dict, "marbles")?.extract()?;
     let marbles = raw_marbles
         .into_iter()
         .map(|(owner, index, kind, value)| {
@@ -508,7 +507,11 @@ fn game_state_to_py(py: Python<'_>, state: GameState) -> PyResult<Py<PyAny>> {
     dict.set_item("discard", card_ids(&state.discard))?;
     dict.set_item(
         "hands",
-        state.hands.iter().map(|hand| card_ids(hand)).collect::<Vec<_>>(),
+        state
+            .hands
+            .iter()
+            .map(|hand| card_ids(hand))
+            .collect::<Vec<_>>(),
     )?;
     dict.set_item(
         "marbles",
@@ -528,18 +531,12 @@ fn game_state_to_py(py: Python<'_>, state: GameState) -> PyResult<Py<PyAny>> {
     Ok(dict.into_any().unbind())
 }
 
-fn required_item<'py>(
-    dict: &Bound<'py, PyDict>,
-    key: &str,
-) -> PyResult<Bound<'py, PyAny>> {
+fn required_item<'py>(dict: &Bound<'py, PyDict>, key: &str) -> PyResult<Bound<'py, PyAny>> {
     dict.get_item(key)?
         .ok_or_else(|| PyValueError::new_err(format!("state missing `{key}`")))
 }
 
-fn optional_item<'py>(
-    dict: &Bound<'py, PyDict>,
-    key: &str,
-) -> PyResult<Option<Bound<'py, PyAny>>> {
+fn optional_item<'py>(dict: &Bound<'py, PyDict>, key: &str) -> PyResult<Option<Bound<'py, PyAny>>> {
     dict.get_item(key)
 }
 
