@@ -95,6 +95,8 @@ def _restore_rng(state: dict[str, object]) -> None:
     torch.set_rng_state(torch_state)
     mps_state = state.get("mps")
     if mps_state is not None and torch.backends.mps.is_available():
+        if isinstance(mps_state, torch.Tensor):
+            mps_state = mps_state.cpu()
         torch.mps.set_rng_state(mps_state)
 
 
