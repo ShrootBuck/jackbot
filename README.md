@@ -40,10 +40,12 @@ Run the long god-model training job:
 ```
 
 `train_god.sh` resumes the first existing checkpoint from
-`checkpoints/champions/promoted.pt`, `checkpoints/champions/pzrnunoa_update3000.pt`,
-or the local W&B download at
-`checkpoints/wandb_best_pzrnunoa_update3000/jackbot_best.pt`. If none exists,
-copy the champion checkpoint in first or pass `--resume PATH`.
+`checkpoints/champions/promoted.pt`, the local W&B download at
+`checkpoints/wandb_best_pzrnunoa_update3000/jackbot_best.pt`, or
+`checkpoints/champions/pzrnunoa_update3000.pt`. The training server is the same
+Apple Silicon MacBook Pro every time, so prefer the existing artifact path from
+the prior run instead of copying files around for fake standardization. If none
+exists, pass `--resume PATH`.
 
 On the dedicated Mac, keep the machine awake:
 
@@ -192,8 +194,7 @@ Default production config:
 - checkpoint every 25 updates or 15 minutes
 - side-swapped arena eval every 25 updates
 
-Serious long-run profile (`uv run jackbot-train --profile serious` or
-`./scripts/train_god.sh`):
+Serious long-run profile (`uv run jackbot-train --profile serious`):
 
 - `num_envs = 1024`
 - `total_updates = 3000`

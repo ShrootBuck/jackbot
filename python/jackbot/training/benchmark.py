@@ -277,18 +277,18 @@ def _promotion_candidates() -> list[Path]:
         CURRENT_CHAMPION_CHECKPOINT,
         Path("checkpoints/wandb_best_pzrnunoa_update3000/jackbot_best.pt"),
         PROMOTED_CHAMPION_CHECKPOINT,
-        OLD_CHAMPION_CHECKPOINT,
         Path("checkpoints/wandb_best_s23pmvby_update1325/jackbot_best.pt"),
+        OLD_CHAMPION_CHECKPOINT,
     ]
 
 
 def _known_champions() -> list[Path]:
     return [
         PROMOTED_CHAMPION_CHECKPOINT,
-        CURRENT_CHAMPION_CHECKPOINT,
-        OLD_CHAMPION_CHECKPOINT,
         Path("checkpoints/wandb_best_pzrnunoa_update3000/jackbot_best.pt"),
+        CURRENT_CHAMPION_CHECKPOINT,
         Path("checkpoints/wandb_best_s23pmvby_update1325/jackbot_best.pt"),
+        OLD_CHAMPION_CHECKPOINT,
     ]
 
 
