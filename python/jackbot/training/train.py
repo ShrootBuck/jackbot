@@ -212,7 +212,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--smoke", action="store_true", help="Run the tiny smoke-training config.")
     parser.add_argument(
         "--profile",
-        choices=["default", "serious"],
+        choices=["default", "serious", "genius"],
         default="default",
         help="Training defaults to start from before applying explicit overrides.",
     )
@@ -268,6 +268,8 @@ def config_from_args(args: argparse.Namespace) -> TrainConfig:
         config = TrainConfig.smoke()
     elif args.profile == "serious":
         config = TrainConfig.serious()
+    elif args.profile == "genius":
+        config = TrainConfig.genius()
     else:
         config = TrainConfig()
     if args.updates is not None:

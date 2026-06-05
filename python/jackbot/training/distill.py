@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+from contextlib import ExitStack
 import json
 import random
 from pathlib import Path
@@ -15,7 +16,7 @@ from jackbot.training.config import TrainConfig
 from jackbot.training.env import to_tensors
 from jackbot.training.model import JackbotNet
 from jackbot.training.ops import segment_env_ids
-from jackbot.training.policies import ModelPolicy, load_model_policy, policy_from_spec
+from jackbot.training.policies import ModelPolicy, Policy, load_model_policy, policy_from_spec
 from jackbot.training.runtime import training_device
 from jackbot.training.search import example_from_search, rank_actions
 
@@ -33,10 +34,11 @@ def main() -> None:
     collect.add_argument("--rollouts", type=int, default=16)
     collect.add_argument("--max-steps", type=int, default=400)
     collect.add_argument("--temperature", type=float, default=0.10)
-    collect.add_argument("--opponent", default="self")
+    collect.add_argument("--opponent", action="append", default=None)
+    collect.add_argument("--shards", type=int, default=1)
 
     train = subparsers.add_parser("train", help="Distill a checkpoint from JSONL targets.")
-    train.add_argument("input", type=Path)
+    train.add_argument("input", nargs="+", type=Path)
     train.add_argument("output", type=Path)
     train.add_argument("--base-checkpoint", type=Path, default=None)
     train.add_argument("--hidden-size", type=int, default=2048)
@@ -55,13 +57,16 @@ def main() -> None:
 def collect_targets(args: argparse.Namespace) -> None:
     device = training_device()
     model_policy, _ = load_model_policy(args.checkpoint)
-    opponent = model_policy if args.opponent == "self" else policy_from_spec(args.opponent)
-    args.output.parent.mkdir(parents=True, exist_ok=True)
+    opponents = _load_opponents(args.opponent or ["self"], model_policy)
+    output_paths = target_output_paths(args.output, args.shards)
+    for path in output_paths:
+        path.parent.mkdir(parents=True, exist_ok=True)
 
     written = 0
     game_seed = args.seed
     game = PlayGame(game_seed)
-    with args.output.open("w") as handle:
+    with ExitStack() as stack:
+        handles = [stack.enter_context(path.open("w")) for path in output_paths]
         while written < args.positions:
             _advance_game(game, model_policy, device, args.warmup_steps)
             if game.winner() is not None:
@@ -69,6 +74,7 @@ def collect_targets(args: argparse.Namespace) -> None:
                 game = PlayGame(game_seed)
                 continue
 
+            opponent = opponents[written % len(opponents)]
             scores = rank_actions(
                 game,
                 model_policy,
@@ -78,7 +84,9 @@ def collect_targets(args: argparse.Namespace) -> None:
                 max_steps=args.max_steps,
                 rollout_deterministic=False,
             )
-            handle.write(json.dumps(example_from_search(game, scores, args.temperature)) + "\n")
+            handles[written % len(handles)].write(
+                json.dumps(example_from_search(game, scores, args.temperature)) + "\n"
+            )
             written += 1
             _advance_game(game, model_policy, device, 1)
             if game.winner() is not None:
@@ -142,9 +150,40 @@ def _advance_game(game: PlayGame, policy: ModelPolicy, device: torch.device, ste
         game.step(action)
 
 
-def _read_examples(path: Path) -> list[dict[str, Any]]:
-    with path.open() as handle:
-        return [json.loads(line) for line in handle if line.strip()]
+def _load_opponents(specs: list[str], model_policy: ModelPolicy) -> list[Policy]:
+    opponents: list[Policy] = []
+    for spec in specs:
+        opponents.append(model_policy if spec == "self" else policy_from_spec(spec))
+    return opponents
+
+
+def target_output_paths(output: Path, shards: int) -> list[Path]:
+    if shards < 1:
+        raise ValueError("shards must be at least 1")
+    if shards == 1 and output.suffix:
+        return [output]
+
+    directory = output if not output.suffix else output.parent
+    stem = output.stem if output.suffix else "targets"
+    return [directory / f"{stem}-{index:04d}.jsonl" for index in range(shards)]
+
+
+def _read_examples(paths: list[Path]) -> list[dict[str, Any]]:
+    examples: list[dict[str, Any]] = []
+    for path in _expand_input_paths(paths):
+        with path.open() as handle:
+            examples.extend(json.loads(line) for line in handle if line.strip())
+    return examples
+
+
+def _expand_input_paths(paths: list[Path]) -> list[Path]:
+    expanded: list[Path] = []
+    for path in paths:
+        if path.is_dir():
+            expanded.extend(sorted(path.glob("*.jsonl")))
+        else:
+            expanded.append(path)
+    return expanded
 
 
 def _chunks(items: list[dict[str, Any]], size: int):

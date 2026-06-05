@@ -33,11 +33,17 @@ Run a short local training job with W&B disabled:
 uv run jackbot-train --updates 10 --num-envs 64 --rollout-len 16 --no-wandb
 ```
 
-Run the serious league-training job:
+Run the long god-model training job:
 
 ```bash
 ./scripts/train_god.sh
 ```
+
+`train_god.sh` resumes the first existing checkpoint from
+`checkpoints/champions/promoted.pt`, `checkpoints/champions/pzrnunoa_update3000.pt`,
+or the local W&B download at
+`checkpoints/wandb_best_pzrnunoa_update3000/jackbot_best.pt`. If none exists,
+copy the champion checkpoint in first or pass `--resume PATH`.
 
 On the dedicated Mac, keep the machine awake:
 
@@ -61,6 +67,12 @@ Run the side-swapped gauntlet evaluator:
 
 ```bash
 uv run jackbot-gauntlet
+```
+
+Run the hard champion benchmark:
+
+```bash
+uv run jackbot-benchmark
 ```
 
 Rank the current legal moves with rollout search:
@@ -188,14 +200,29 @@ Serious long-run profile (`uv run jackbot-train --profile serious` or
 - side-swapped arena eval every 50 updates with 256 games
 - league training enabled against heuristic, random, self-play, and recent checkpoints
 
+Genius fine-tune profile (`uv run jackbot-train --profile genius`, used by
+`./scripts/train_god.sh`):
+
+- `num_envs = 1024`
+- `total_updates = 12000`
+- `lr = 1e-4`
+- reward shaping disabled for resume-safe champion fine-tuning
+- side-swapped arena eval every 100 updates with 512 games
+- milestone archives every 250 updates
+- league training against heuristic, random, self-play, recent checkpoints, and
+  any existing `checkpoints/champions/*.pt` or `checkpoints/distilled/*.pt`
+- stochastic league opponents for more variety
+
 Useful direct commands:
 
 ```bash
 uv run jackbot-train --smoke
 uv run jackbot-train
 uv run jackbot-train --profile serious
+uv run jackbot-train --profile genius
 uv run jackbot-eval
 uv run jackbot-gauntlet
+uv run jackbot-benchmark
 uv run jackbot-search --rollouts 64
 uv run jackbot-watch --seed 1
 uv run jackbot-play
@@ -210,6 +237,8 @@ The "God model" path is not just longer PPO. The repo now supports:
 
 - side-swapped gauntlets against baselines and checkpoints, with 95% confidence
   intervals
+- a hard benchmark ladder that requires no random/heuristic regression and a
+  lower-confidence win over the current champion
 - league rollouts where the learner trains against random, heuristic, prior
   checkpoints, and current self-play
 - W&B model artifacts for saved checkpoints
@@ -217,8 +246,8 @@ The "God model" path is not just longer PPO. The repo now supports:
 - JSONL search-target collection plus supervised distillation:
 
 ```bash
-uv run jackbot-distill collect checkpoints/jackbot_best.pt data/search_targets.jsonl --positions 1024 --rollouts 32
-uv run jackbot-distill train data/search_targets.jsonl checkpoints/jackbot_distilled.pt --base-checkpoint checkpoints/jackbot_best.pt --epochs 5
+uv run jackbot-distill collect checkpoints/jackbot_best.pt data/search_targets.jsonl --positions 4096 --shards 8 --rollouts 32 --max-steps 600 --opponent self --opponent heuristic
+uv run jackbot-distill train data/search_targets.jsonl checkpoints/distilled/r1.pt --base-checkpoint checkpoints/jackbot_best.pt --epochs 5
 ```
 
 Do not resume a checkpoint into a different `hidden_size`; the tensor shapes will
@@ -254,7 +283,7 @@ The script folder is intentionally small:
 
 - `bootstrap.sh`: rebuild/sync the local Python + Rust extension environment
 - `verify.sh`: Rust tests, clippy, and Python tests
-- `train_god.sh`: serious long-run training defaults
+- `train_god.sh`: long champion fine-tune defaults
 - `resume.sh`: resume `jackbot_latest.pt` or a specific checkpoint
 - `common.sh`: shared environment setup for the other scripts
 
@@ -280,6 +309,12 @@ seat and hand, prompts for each revealed card and visible move, auto-saves to
 
 ```bash
 uv run jackbot-advisor --samples 16 --rollouts-per-sample 2
+```
+
+For slower but stronger table advice, use the oracle preset:
+
+```bash
+uv run jackbot-advisor --preset oracle
 ```
 
 The advisor never asks for opponent hands. It tracks visible cards, hand sizes,

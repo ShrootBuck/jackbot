@@ -4,6 +4,11 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
 DEFAULT_BEST_CHECKPOINT = Path("checkpoints/jackbot_best.pt")
+CHAMPIONS_DIR = Path("checkpoints/champions")
+DISTILLED_DIR = Path("checkpoints/distilled")
+PROMOTED_CHAMPION_CHECKPOINT = CHAMPIONS_DIR / "promoted.pt"
+CURRENT_CHAMPION_CHECKPOINT = CHAMPIONS_DIR / "pzrnunoa_update3000.pt"
+OLD_CHAMPION_CHECKPOINT = CHAMPIONS_DIR / "s23pmvby_update1325.pt"
 
 
 @dataclass(slots=True)
@@ -81,6 +86,30 @@ class TrainConfig:
             league_deterministic_opponents=True,
         )
 
+    @classmethod
+    def genius(cls) -> "TrainConfig":
+        return cls(
+            num_envs=1024,
+            total_updates=12_000,
+            lr=1e-4,
+            shaping_start=0.0,
+            eval_interval_updates=100,
+            eval_games=512,
+            eval_num_envs=64,
+            checkpoint_interval_updates=25,
+            milestone_interval_updates=250,
+            league_enabled=True,
+            league_baselines=["heuristic", "random"],
+            league_opponents=discover_genius_opponents(),
+            league_auto_checkpoints=True,
+            league_max_checkpoints=8,
+            league_self_play_weight=1.0,
+            league_baseline_weight=0.5,
+            league_checkpoint_weight=3.0,
+            league_refresh_interval_updates=25,
+            league_deterministic_opponents=False,
+        )
+
     def to_dict(self) -> dict[str, object]:
         data = asdict(self)
         data["checkpoint_dir"] = str(self.checkpoint_dir)
@@ -99,3 +128,49 @@ def shaping_scale(config: TrainConfig, update: int) -> float:
     decay_updates = max(1, int(config.total_updates * config.shaping_decay_fraction))
     progress = min(1.0, update / decay_updates)
     return config.shaping_start * (1.0 - progress)
+
+
+def discover_genius_opponents(
+    champions_dir: Path = CHAMPIONS_DIR,
+    distilled_dir: Path = DISTILLED_DIR,
+) -> list[str]:
+    paths: list[Path] = []
+    paths.extend(_existing_paths(_known_champion_candidates()))
+    paths.extend(sorted(champions_dir.glob("*.pt")) if champions_dir.exists() else [])
+    paths.extend(sorted(distilled_dir.glob("*.pt")) if distilled_dir.exists() else [])
+    return [str(path) for path in _dedupe_existing_paths(paths)]
+
+
+def default_oracle_checkpoint() -> Path:
+    for path in _known_champion_candidates():
+        if path.exists():
+            return path
+    return DEFAULT_BEST_CHECKPOINT
+
+
+def _known_champion_candidates() -> list[Path]:
+    return [
+        PROMOTED_CHAMPION_CHECKPOINT,
+        CURRENT_CHAMPION_CHECKPOINT,
+        OLD_CHAMPION_CHECKPOINT,
+        Path("checkpoints/wandb_best_pzrnunoa_update3000/jackbot_best.pt"),
+        Path("checkpoints/wandb_best_s23pmvby_update1325/jackbot_best.pt"),
+    ]
+
+
+def _existing_paths(paths: list[Path]) -> list[Path]:
+    return [path for path in paths if path.exists()]
+
+
+def _dedupe_existing_paths(paths: list[Path]) -> list[Path]:
+    deduped: list[Path] = []
+    seen: set[Path] = set()
+    for path in paths:
+        if not path.exists():
+            continue
+        key = path.resolve()
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(path)
+    return deduped

@@ -19,6 +19,7 @@ dependencies = [
 jackbot-train = "jackbot.training.train:main"
 jackbot-eval = "jackbot.training.evaluate:main"
 jackbot-gauntlet = "jackbot.training.gauntlet:main"
+jackbot-benchmark = "jackbot.training.benchmark:main"
 jackbot-play = "jackbot.training.play:main"
 jackbot-watch = "jackbot.training.watch:main"
 jackbot-search = "jackbot.training.search:main"

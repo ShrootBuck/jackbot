@@ -5,6 +5,8 @@ import torch
 from jackbot import PlayGame
 from jackbot.training.advisor import (
     AdvisorSession,
+    advisor_checkpoint,
+    apply_advisor_preset,
     apply_action,
     card_label,
     legal_action_details,
@@ -84,3 +86,51 @@ def test_advisor_ranking_shape() -> None:
     assert recommendations
     assert recommendations[0].rollouts == 1
     assert recommendations[0].label
+
+
+def test_oracle_preset_sets_heavier_defaults_and_oracle_checkpoint(monkeypatch, tmp_path) -> None:
+    promoted = tmp_path / "promoted.pt"
+    promoted.write_bytes(b"checkpoint")
+    args = type(
+        "Args",
+        (),
+        {
+            "preset": "oracle",
+            "checkpoint": None,
+            "samples": None,
+            "rollouts_per_sample": None,
+            "max_steps": None,
+        },
+    )()
+
+    monkeypatch.setattr(
+        "jackbot.training.advisor.default_oracle_checkpoint",
+        lambda: promoted,
+    )
+
+    apply_advisor_preset(args)
+
+    assert args.samples == 64
+    assert args.rollouts_per_sample == 4
+    assert args.max_steps == 700
+    assert advisor_checkpoint(args) == promoted
+
+
+def test_advisor_manual_overrides_survive_preset() -> None:
+    args = type(
+        "Args",
+        (),
+        {
+            "preset": "oracle",
+            "checkpoint": None,
+            "samples": 8,
+            "rollouts_per_sample": None,
+            "max_steps": 50,
+        },
+    )()
+
+    apply_advisor_preset(args)
+
+    assert args.samples == 8
+    assert args.rollouts_per_sample == 4
+    assert args.max_steps == 50

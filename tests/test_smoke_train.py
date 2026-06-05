@@ -49,6 +49,31 @@ def test_serious_profile_bakes_in_long_run_defaults(monkeypatch) -> None:
     assert config.league_enabled is True
 
 
+def test_genius_profile_bakes_in_champion_finetune_defaults(monkeypatch) -> None:
+    monkeypatch.setattr(sys, "argv", ["jackbot-train", "--profile", "genius"])
+
+    config = config_from_args(parse_args())
+
+    assert config.hidden_size == 2048
+    assert config.total_updates == 12_000
+    assert config.lr == 1e-4
+    assert config.shaping_start == 0.0
+    assert config.eval_interval_updates == 100
+    assert config.eval_games == 512
+    assert config.milestone_interval_updates == 250
+    assert config.league_enabled is True
+    assert config.league_deterministic_opponents is False
+
+
+def test_smoke_profile_can_parse_genius_without_long_run(monkeypatch) -> None:
+    monkeypatch.setattr(sys, "argv", ["jackbot-train", "--smoke", "--profile", "genius"])
+
+    config = config_from_args(parse_args())
+
+    assert config.total_updates == 2
+    assert config.num_envs == 8
+
+
 def test_gauntlet_defaults_to_best_checkpoint(monkeypatch, tmp_path) -> None:
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(sys, "argv", ["jackbot-gauntlet"])

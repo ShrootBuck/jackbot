@@ -11,6 +11,7 @@ import torch
 
 from jackbot import PlayGame
 from jackbot.training.checkpoint import default_checkpoint_path
+from jackbot.training.config import default_oracle_checkpoint
 from jackbot.training.policies import ModelPolicy, load_model_policy
 from jackbot.training.runtime import training_device
 from jackbot.training.search import rank_actions
@@ -58,6 +59,19 @@ class AdvisorRecommendation:
     score: float
     wins: float
     rollouts: int
+
+
+@dataclass(frozen=True, slots=True)
+class AdvisorPreset:
+    samples: int
+    rollouts_per_sample: int
+    max_steps: int
+
+
+ADVISOR_PRESETS = {
+    "default": AdvisorPreset(samples=16, rollouts_per_sample=2, max_steps=400),
+    "oracle": AdvisorPreset(samples=64, rollouts_per_sample=4, max_steps=700),
+}
 
 
 @dataclass(slots=True)
@@ -712,18 +726,39 @@ def stable_detail_label(detail: dict[str, Any]) -> str:
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Real-game Jackbot advisor.")
     parser.add_argument("checkpoint", nargs="?", type=Path, default=None)
+    parser.add_argument("--preset", choices=sorted(ADVISOR_PRESETS), default="default")
     parser.add_argument("--session", type=Path, default=Path(".jackbot-advisor.json"))
-    parser.add_argument("--samples", type=int, default=16)
-    parser.add_argument("--rollouts-per-sample", type=int, default=2)
-    parser.add_argument("--max-steps", type=int, default=400)
+    parser.add_argument("--samples", type=int, default=None)
+    parser.add_argument("--rollouts-per-sample", type=int, default=None)
+    parser.add_argument("--max-steps", type=int, default=None)
     parser.add_argument("--top", type=int, default=5)
     parser.add_argument("--seed", type=int, default=400_000)
-    return parser.parse_args()
+    args = parser.parse_args()
+    return apply_advisor_preset(args)
+
+
+def apply_advisor_preset(args: argparse.Namespace) -> argparse.Namespace:
+    preset = ADVISOR_PRESETS[args.preset]
+    if args.samples is None:
+        args.samples = preset.samples
+    if args.rollouts_per_sample is None:
+        args.rollouts_per_sample = preset.rollouts_per_sample
+    if args.max_steps is None:
+        args.max_steps = preset.max_steps
+    return args
+
+
+def advisor_checkpoint(args: argparse.Namespace) -> Path:
+    if args.checkpoint is not None:
+        return args.checkpoint
+    if args.preset == "oracle":
+        return default_oracle_checkpoint()
+    return default_checkpoint_path()
 
 
 def main() -> None:
     args = parse_args()
-    checkpoint = args.checkpoint or default_checkpoint_path()
+    checkpoint = advisor_checkpoint(args)
     device = training_device()
     model_policy, _ = load_model_policy(checkpoint)
     session = create_or_resume_session(args.session)
