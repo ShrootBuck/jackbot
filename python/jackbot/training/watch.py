@@ -7,6 +7,7 @@ import torch
 
 from jackbot import PlayGame
 from jackbot.training.checkpoint import default_checkpoint_path
+from jackbot.training.config import union_feature_schemas
 from jackbot.training.evaluate import load_model
 from jackbot.training.play import action_label, model_action
 from jackbot.training.runtime import training_device
@@ -34,7 +35,7 @@ def watch_game(
         model.eval()
         models.append(model)
 
-    game = PlayGame(seed)
+    game = PlayGame(seed, union_feature_schemas(*(model.feature_schema for model in models)))
     print("Jackbot watch")
     print(f"Seed: {seed}")
     if len(checkpoints) == 1:

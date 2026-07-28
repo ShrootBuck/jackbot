@@ -82,9 +82,11 @@ class AdvisorSession:
     deal_round_index: int = 1
     deck_remaining: int = 36
     discard: list[int] = field(default_factory=list)
+    unknown_discard_count: int = 0
     hand_sizes: list[int] = field(default_factory=lambda: [4, 4, 4, 4])
     my_hand: list[int] = field(default_factory=list)
     marbles: list[list[Any]] = field(default_factory=lambda: initial_marbles())
+    public_history: list[dict[str, Any]] = field(default_factory=list)
     winner: int | None = None
     history: list[dict[str, Any]] = field(default_factory=list)
 
@@ -94,16 +96,27 @@ class AdvisorSession:
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> AdvisorSession:
+        deck_remaining = int(data.get("deck_remaining", 36))
+        discard = [int(card) for card in data.get("discard", [])]
+        hand_sizes = [int(size) for size in data.get("hand_sizes", [4, 4, 4, 4])]
+        unknown_discard_count = data.get("unknown_discard_count")
+        if unknown_discard_count is None:
+            unknown_discard_count = max(
+                0,
+                len(FULL_DECK) - deck_remaining - len(discard) - sum(hand_sizes),
+            )
         return cls(
             user_seat=int(data["user_seat"]),
             current_player=int(data.get("current_player", 0)),
             turn_index=int(data.get("turn_index", 0)),
             deal_round_index=int(data.get("deal_round_index", 1)),
-            deck_remaining=int(data.get("deck_remaining", 36)),
-            discard=[int(card) for card in data.get("discard", [])],
-            hand_sizes=[int(size) for size in data.get("hand_sizes", [4, 4, 4, 4])],
+            deck_remaining=deck_remaining,
+            discard=discard,
+            unknown_discard_count=int(unknown_discard_count),
+            hand_sizes=hand_sizes,
             my_hand=[int(card) for card in data.get("my_hand", [])],
             marbles=[list(marble) for marble in data.get("marbles", initial_marbles())],
+            public_history=[dict(item) for item in data.get("public_history", [])],
             winner=data.get("winner"),
             history=[dict(item) for item in data.get("history", [])],
         )
@@ -121,9 +134,11 @@ class AdvisorSession:
             "deal_round_index": self.deal_round_index,
             "deck_remaining": self.deck_remaining,
             "discard": list(self.discard),
+            "unknown_discard_count": self.unknown_discard_count,
             "hand_sizes": list(self.hand_sizes),
             "my_hand": list(self.my_hand),
             "marbles": [list(marble) for marble in self.marbles],
+            "public_history": [dict(item) for item in self.public_history],
             "winner": self.winner,
         }
 
@@ -142,9 +157,11 @@ class AdvisorSession:
         self.deal_round_index = restored.deal_round_index
         self.deck_remaining = restored.deck_remaining
         self.discard = restored.discard
+        self.unknown_discard_count = restored.unknown_discard_count
         self.hand_sizes = restored.hand_sizes
         self.my_hand = restored.my_hand
         self.marbles = restored.marbles
+        self.public_history = restored.public_history
         self.winner = restored.winner
         self.history = history
         return True
@@ -205,16 +222,18 @@ def session_engine_state(
     hands: list[list[int]],
     deck: list[int],
     rng_state: int,
+    discard: list[int] | None = None,
 ) -> dict[str, Any]:
     return {
         "rng_state": rng_state,
         "deck": deck,
-        "discard": list(session.discard),
+        "discard": list(session.discard if discard is None else discard),
         "hands": hands,
         "marbles": [tuple(marble) for marble in session.marbles],
         "current_player": session.current_player,
         "turn_index": session.turn_index,
         "deal_round_index": session.deal_round_index,
+        "public_history": [dict(item) for item in session.public_history],
         "winner": session.winner,
     }
 
@@ -226,11 +245,13 @@ def sample_hidden_state(session: AdvisorSession, seed: int) -> dict[str, Any]:
             f"but session says {session.hand_sizes[session.user_seat]}"
         )
 
+    validate_session_card_counts(session)
     rng = random.Random(seed)
     known_cards = list(session.discard) + list(session.my_hand)
     assert_unique_known_cards(known_cards)
     unknown = [card for card in FULL_DECK if card not in set(known_cards)]
     rng.shuffle(unknown)
+    sampled_discard = list(session.discard) + draw_cards(unknown, session.unknown_discard_count)
 
     hands: list[list[int]] = []
     for player in range(NUM_PLAYERS):
@@ -239,9 +260,11 @@ def sample_hidden_state(session: AdvisorSession, seed: int) -> dict[str, Any]:
             continue
         hands.append(draw_cards(unknown, session.hand_sizes[player]))
 
-    deck = list(unknown)
+    deck = draw_cards(unknown, session.deck_remaining)
+    if unknown:
+        raise ValueError("session card counts leave unassigned cards")
     rng.shuffle(deck)
-    return session_engine_state(session, hands, deck, seed)
+    return session_engine_state(session, hands, deck, seed, sampled_discard)
 
 
 def synthetic_state_for_action(
@@ -249,6 +272,7 @@ def synthetic_state_for_action(
     card_id: int | None,
     seed: int,
 ) -> dict[str, Any]:
+    validate_session_card_counts(session)
     rng = random.Random(seed)
     reserved = list(session.discard) + list(session.my_hand)
     if card_id is not None and card_id not in reserved:
@@ -256,6 +280,7 @@ def synthetic_state_for_action(
     assert_unique_known_cards(reserved)
     unknown = [card for card in FULL_DECK if card not in set(reserved)]
     rng.shuffle(unknown)
+    sampled_discard = list(session.discard) + draw_cards(unknown, session.unknown_discard_count)
 
     hands: list[list[int]] = []
     for player in range(NUM_PLAYERS):
@@ -274,9 +299,48 @@ def synthetic_state_for_action(
             hand = draw_cards(unknown, count)
         hands.append(hand)
 
-    deck = list(unknown)
+    deck = draw_cards(unknown, session.deck_remaining)
+    if unknown:
+        raise ValueError("session card counts leave unassigned cards")
     rng.shuffle(deck)
-    return session_engine_state(session, hands, deck, seed)
+    return session_engine_state(session, hands, deck, seed, sampled_discard)
+
+
+def synthetic_state_for_known_current_hand(
+    session: AdvisorSession,
+    current_hand: list[int],
+    seed: int,
+) -> dict[str, Any]:
+    validate_session_card_counts(session)
+    current_player = session.current_player
+    if len(current_hand) != session.hand_sizes[current_player]:
+        raise ValueError("synthetic current hand has the wrong size")
+    if current_player == session.user_seat:
+        if current_hand != session.my_hand:
+            raise ValueError("synthetic hand disagrees with the user's known hand")
+        extra_known: list[int] = []
+    else:
+        extra_known = list(current_hand)
+
+    rng = random.Random(seed)
+    reserved = list(session.discard) + list(session.my_hand) + extra_known
+    assert_unique_known_cards(reserved)
+    unknown = [card for card in FULL_DECK if card not in set(reserved)]
+    rng.shuffle(unknown)
+    sampled_discard = list(session.discard) + draw_cards(unknown, session.unknown_discard_count)
+    hands: list[list[int]] = []
+    for player in range(NUM_PLAYERS):
+        if player == current_player:
+            hands.append(list(current_hand))
+        elif player == session.user_seat:
+            hands.append(list(session.my_hand))
+        else:
+            hands.append(draw_cards(unknown, session.hand_sizes[player]))
+    deck = draw_cards(unknown, session.deck_remaining)
+    if unknown:
+        raise ValueError("session card counts leave unassigned cards")
+    rng.shuffle(deck)
+    return session_engine_state(session, hands, deck, seed, sampled_discard)
 
 
 def draw_cards(deck: list[int], count: int) -> list[int]:
@@ -295,6 +359,24 @@ def assert_unique_known_cards(cards: list[int]) -> None:
         raise ValueError(f"known cards contain a duplicate: {labels}")
 
 
+def validate_session_card_counts(session: AdvisorSession) -> None:
+    counts = [
+        session.deck_remaining,
+        session.unknown_discard_count,
+        *session.hand_sizes,
+    ]
+    if any(count < 0 for count in counts):
+        raise ValueError("session card counts cannot be negative")
+    total = (
+        session.deck_remaining
+        + len(session.discard)
+        + session.unknown_discard_count
+        + sum(session.hand_sizes)
+    )
+    if total != len(FULL_DECK):
+        raise ValueError(f"session accounts for {total} cards, expected {len(FULL_DECK)}")
+
+
 @torch.no_grad()
 def rank_advisor_actions(
     session: AdvisorSession,
@@ -308,7 +390,7 @@ def rank_advisor_actions(
     aggregates: dict[int, dict[str, Any]] = {}
     for sample_index in range(samples):
         state = sample_hidden_state(session, seed + sample_index * 100_003)
-        game = PlayGame.from_state(state)
+        game = PlayGame.from_state(state, model_policy.feature_schema)
         details = {int(item["id"]): dict(item) for item in game.legal_action_details()}
         scores = rank_actions(
             game,
@@ -350,8 +432,70 @@ def rank_advisor_actions(
 
 
 def legal_action_details(session: AdvisorSession, card_id: int | None, seed: int) -> list[dict[str, Any]]:
-    game = PlayGame.from_state(synthetic_state_for_action(session, card_id, seed))
-    return [dict(item) for item in game.legal_action_details()]
+    attempts = 1 if card_id is None else 256
+    for attempt in range(attempts):
+        synthetic_seed = seed + attempt * 100_003
+        game = PlayGame.from_state(synthetic_state_for_action(session, card_id, synthetic_seed))
+        details = [dict(item) for item in game.legal_action_details()]
+        if card_id is not None:
+            details = [detail for detail in details if detail.get("card") == card_id]
+        if details:
+            for detail in details:
+                detail["_synthetic_seed"] = synthetic_seed
+            return details
+    if card_id is not None:
+        burn = deterministic_observed_burn(session, card_id, seed)
+        if burn is not None:
+            state, current_hand = burn
+            game = PlayGame.from_state(state)
+            details = [
+                dict(item)
+                for item in game.legal_action_details()
+                if item.get("card") == card_id and item.get("kind") == "burn"
+            ]
+            for detail in details:
+                detail["_synthetic_seed"] = seed
+                detail["_synthetic_hand"] = current_hand
+            return details
+    return []
+
+
+def deterministic_observed_burn(
+    session: AdvisorSession,
+    card_id: int,
+    seed: int,
+) -> tuple[dict[str, Any], list[int]] | None:
+    current_player = session.current_player
+    hand_size = session.hand_sizes[current_player]
+    if current_player == session.user_seat or hand_size <= 0:
+        return None
+    probe = AdvisorSession.from_dict(session.core_dict())
+    probe.hand_sizes[current_player] = 1
+    probe.deck_remaining += hand_size - 1
+
+    unavailable = set(session.discard) | set(session.my_hand)
+    candidates = [card_id] + [
+        card for card in FULL_DECK if card != card_id and card not in unavailable
+    ]
+    unplayable: list[int] = []
+    for candidate in candidates:
+        try:
+            state = synthetic_state_for_known_current_hand(
+                probe,
+                [candidate],
+                seed + candidate * 1_009,
+            )
+        except ValueError:
+            continue
+        details = PlayGame.from_state(state).legal_action_details()
+        if details and all(item["kind"] == "burn" for item in details):
+            unplayable.append(candidate)
+        if len(unplayable) >= hand_size and card_id in unplayable:
+            break
+    if card_id not in unplayable or len(unplayable) < hand_size:
+        return None
+    current_hand = [card_id] + [card for card in unplayable if card != card_id][: hand_size - 1]
+    return synthetic_state_for_known_current_hand(session, current_hand, seed), current_hand
 
 
 def apply_action(
@@ -360,8 +504,14 @@ def apply_action(
     card_id: int | None,
     forced_discard: int | None,
     seed: int,
+    synthetic_hand: list[int] | None = None,
 ) -> str:
-    game = PlayGame.from_state(synthetic_state_for_action(session, card_id, seed))
+    state = (
+        synthetic_state_for_known_current_hand(session, synthetic_hand, seed)
+        if synthetic_hand is not None
+        else synthetic_state_for_action(session, card_id, seed)
+    )
+    game = PlayGame.from_state(state)
     details = {int(item["id"]): dict(item) for item in game.legal_action_details()}
     if action_id not in details:
         raise ValueError(f"action {action_id} is not legal in the synced state")
@@ -371,8 +521,20 @@ def apply_action(
 
     acting_player = session.current_player
     next_player = (acting_player + 1) % NUM_PLAYERS
+    if detail["kind"] == "skip" and session.hand_sizes[next_player] > 0:
+        if next_player == session.user_seat:
+            if forced_discard is None:
+                raise ValueError("enter the card discarded from your known hand")
+            if forced_discard not in session.my_hand:
+                raise ValueError("skipped card is not in your known hand")
+        elif forced_discard is not None and (
+            forced_discard in session.discard or forced_discard in session.my_hand
+        ):
+            raise ValueError("forced discard duplicates a known card")
     session.push_history()
     outcome_text = game.step(action_id)
+    if detail["kind"] == "skip":
+        outcome_text = visible_skip_outcome(outcome_text, next_player, forced_discard)
     state = game.state()
     session.marbles = [list(marble) for marble in state["marbles"]]
     session.current_player = int(state["current_player"])
@@ -394,13 +556,26 @@ def apply_action(
             session.discard.append(forced_discard)
             if next_player == session.user_seat:
                 remove_known_hand_card(session, forced_discard)
+        else:
+            session.unknown_discard_count += 1
+
+    session.public_history.append(
+        public_action_record(detail, acting_player, forced_discard, next_player)
+    )
+    session.public_history = session.public_history[-8:]
 
     if session.winner is None and all(size == 0 for size in session.hand_sizes):
+        if session.deck_remaining == 0:
+            session.deck_remaining = len(session.discard) + session.unknown_discard_count
+            session.discard.clear()
+            session.unknown_discard_count = 0
         deal_size = HAND_CYCLE[session.deal_round_index % len(HAND_CYCLE)]
         session.deal_round_index = (session.deal_round_index + 1) % len(HAND_CYCLE)
         session.hand_sizes = [deal_size] * NUM_PLAYERS
-        session.deck_remaining = max(0, session.deck_remaining - deal_size * NUM_PLAYERS)
+        session.deck_remaining -= deal_size * NUM_PLAYERS
         session.my_hand = []
+
+    validate_session_card_counts(session)
 
     return outcome_text
 
@@ -410,6 +585,52 @@ def remove_known_hand_card(session: AdvisorSession, card_id: int) -> None:
         session.my_hand.remove(card_id)
     except ValueError:
         pass
+
+
+def public_action_record(
+    detail: dict[str, Any],
+    acting_player: int,
+    forced_discard: int | None,
+    skipped_player: int,
+) -> dict[str, Any]:
+    record: dict[str, Any] = {
+        "player": acting_player,
+        "card": detail.get("card"),
+        "kind": detail["kind"],
+        "forced_discard": None,
+    }
+    for key in (
+        "owner",
+        "marble",
+        "steps",
+        "direction",
+        "bulldozer",
+        "second_owner",
+        "second_marble",
+        "second_steps",
+        "target_owner",
+        "target_marble",
+    ):
+        if key in detail:
+            record[key] = detail[key]
+    if detail["kind"] == "skip":
+        record["forced_discard"] = {
+            "player": skipped_player,
+            "card": forced_discard,
+        }
+    return record
+
+
+def visible_skip_outcome(text: str, skipped_player: int, forced_discard: int | None) -> str:
+    lines = [line for line in text.splitlines() if "randomly discarded" not in line]
+    if forced_discard is None:
+        lines.append(f"{player_label(skipped_player)} discarded an unknown card.")
+    else:
+        lines.append(
+            f"{player_label(skipped_player)} was skipped and discarded "
+            f"{card_label(forced_discard)}."
+        )
+    return "\n".join(lines)
 
 
 def save_session(path: Path, session: AdvisorSession) -> None:
@@ -561,11 +782,15 @@ def prompt_forced_discard(
     skipped_player = (session.current_player + 1) % NUM_PLAYERS
     if session.hand_sizes[skipped_player] <= 0:
         return None
-    return prompt_optional_card(
-        f"{player_label(skipped_player)} discarded by skip (blank if unknown): ",
-        session,
-        session_path,
-    )
+    while True:
+        card = prompt_optional_card(
+            f"{player_label(skipped_player)} discarded by skip (blank if unknown): ",
+            session,
+            session_path,
+        )
+        if card is not None or skipped_player != session.user_seat:
+            return card
+        print("Your hand is known, so enter the discarded card.")
 
 
 def handle_user_turn(
@@ -634,7 +859,8 @@ def handle_user_turn(
         chosen.action_id,
         detail.get("card"),
         forced_discard,
-        args.seed + session.turn_index,
+        int(detail.get("_synthetic_seed", args.seed + session.turn_index)),
+        detail.get("_synthetic_hand"),
     )
     print(outcome)
     save_session(args.session, session)
@@ -681,7 +907,8 @@ def handle_observed_turn(session: AdvisorSession, args: argparse.Namespace) -> N
         int(detail["id"]),
         card_id,
         forced_discard,
-        args.seed + session.turn_index,
+        int(detail.get("_synthetic_seed", args.seed + session.turn_index)),
+        detail.get("_synthetic_hand"),
     )
     print(outcome)
     save_session(args.session, session)

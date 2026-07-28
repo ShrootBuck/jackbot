@@ -1,6 +1,7 @@
 use jackbot_engine::{
     ActionKind, Card, Direction, Game, GameState, LegalAction, MarbleLocation, MarbleState,
-    MoveLeg, NUM_PLAYERS, Observation, Rules, StepEvents, StepOutcome, Team,
+    MoveLeg, NUM_PLAYERS, Observation, PUBLIC_HISTORY_LIMIT, PublicAction, PublicDiscard, Rules,
+    StepEvents, StepOutcome, Team,
 };
 use pyo3::buffer::PyBuffer;
 use pyo3::exceptions::PyValueError;
@@ -10,8 +11,64 @@ use pyo3::types::{PyByteArray, PyDict, PyList, PyModule};
 pub const OBS_SIZE: usize = 222;
 pub const ACTION_SIZE: usize = 96;
 pub const BELIEF_SIZE: usize = 156;
+pub const PUBLIC_HISTORY_RECORD_SIZE: usize = 65;
+pub const PUBLIC_HISTORY_SIZE: usize = PUBLIC_HISTORY_LIMIT * PUBLIC_HISTORY_RECORD_SIZE;
+pub const ACTION_CONSEQUENCE_SIZE: usize = NUM_PLAYERS * MARBLES_PER_PLAYER * 7;
 const MARBLES_PER_PLAYER: usize = 4;
 const NONE_INDEX: usize = 4;
+
+#[derive(Clone, Copy)]
+struct FeatureSchema {
+    name: &'static str,
+    public_history: bool,
+    action_consequences: bool,
+}
+
+impl FeatureSchema {
+    fn parse(name: &str) -> PyResult<Self> {
+        match name {
+            "base_v1" => Ok(Self {
+                name: "base_v1",
+                public_history: false,
+                action_consequences: false,
+            }),
+            "a1" => Ok(Self {
+                name: "a1",
+                public_history: false,
+                action_consequences: true,
+            }),
+            "h1" => Ok(Self {
+                name: "h1",
+                public_history: true,
+                action_consequences: false,
+            }),
+            "a1h1" => Ok(Self {
+                name: "a1h1",
+                public_history: true,
+                action_consequences: true,
+            }),
+            _ => Err(PyValueError::new_err(format!(
+                "unknown feature schema {name:?}; expected base_v1, a1, h1, or a1h1"
+            ))),
+        }
+    }
+
+    fn history_size(self) -> usize {
+        if self.public_history {
+            PUBLIC_HISTORY_SIZE
+        } else {
+            0
+        }
+    }
+
+    fn consequence_size(self) -> usize {
+        if self.action_consequences {
+            ACTION_CONSEQUENCE_SIZE
+        } else {
+            0
+        }
+    }
+}
 
 #[pyclass]
 pub struct BatchEnv {
@@ -19,11 +76,13 @@ pub struct BatchEnv {
     base_seed: u64,
     episodes: Vec<u64>,
     game_steps: Vec<u64>,
+    feature_schema: FeatureSchema,
 }
 
 #[pyclass]
 pub struct PlayGame {
     game: Game,
+    feature_schema: FeatureSchema,
 }
 
 struct BatchArrays {
@@ -33,26 +92,32 @@ struct BatchArrays {
     env_ids: Vec<i64>,
     current_players: Vec<i64>,
     belief_targets: Vec<f32>,
+    public_history: Vec<f32>,
+    action_consequences: Vec<f32>,
     env_count: usize,
     action_count: usize,
+    feature_schema: FeatureSchema,
 }
 
 #[pymethods]
 impl PlayGame {
     #[new]
-    #[pyo3(signature = (seed=1))]
-    pub fn new(seed: u64) -> Self {
-        Self {
+    #[pyo3(signature = (seed=1, feature_schema="base_v1"))]
+    pub fn new(seed: u64, feature_schema: &str) -> PyResult<Self> {
+        Ok(Self {
             game: Game::new(seed, Rules::canonical_v1()),
-        }
+            feature_schema: FeatureSchema::parse(feature_schema)?,
+        })
     }
 
     #[staticmethod]
-    pub fn from_state(state: &Bound<'_, PyAny>) -> PyResult<Self> {
+    #[pyo3(signature = (state, feature_schema="base_v1"))]
+    pub fn from_state(state: &Bound<'_, PyAny>, feature_schema: &str) -> PyResult<Self> {
         let state = game_state_from_py(state)?;
         Ok(Self {
             game: Game::from_state(state, Rules::canonical_v1())
                 .map_err(|err| PyValueError::new_err(err.to_string()))?,
+            feature_schema: FeatureSchema::parse(feature_schema)?,
         })
     }
 
@@ -77,11 +142,12 @@ impl PlayGame {
     pub fn copy(&self) -> Self {
         Self {
             game: self.game.clone(),
+            feature_schema: self.feature_schema,
         }
     }
 
     pub fn batch(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
-        let arrays = snapshot_game(&self.game, 0)?;
+        let arrays = snapshot_game(&self.game, 0, self.feature_schema)?;
         batch_to_dict(
             py,
             arrays,
@@ -150,8 +216,8 @@ impl PlayGame {
 #[pymethods]
 impl BatchEnv {
     #[new]
-    #[pyo3(signature = (num_envs, seed=1))]
-    pub fn new(num_envs: usize, seed: u64) -> PyResult<Self> {
+    #[pyo3(signature = (num_envs, seed=1, feature_schema="base_v1"))]
+    pub fn new(num_envs: usize, seed: u64, feature_schema: &str) -> PyResult<Self> {
         if num_envs == 0 {
             return Err(PyValueError::new_err("num_envs must be positive"));
         }
@@ -160,6 +226,7 @@ impl BatchEnv {
             base_seed: seed,
             episodes: vec![0; num_envs],
             game_steps: vec![0; num_envs],
+            feature_schema: FeatureSchema::parse(feature_schema)?,
         })
     }
 
@@ -176,6 +243,70 @@ impl BatchEnv {
         self.envs = make_envs(self.envs.len(), self.base_seed);
         self.episodes.fill(0);
         self.game_steps.fill(0);
+
+        let arrays = self.snapshot()?;
+        batch_to_dict(
+            py,
+            arrays,
+            vec![0.0; self.envs.len()],
+            vec![0.0; self.envs.len() * 2],
+            vec![false; self.envs.len()],
+            vec![-1; self.envs.len()],
+            vec![-1; self.envs.len()],
+            vec![0; self.envs.len()],
+            vec![0; self.envs.len()],
+            vec![0; self.envs.len()],
+        )
+    }
+
+    pub fn state(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
+        let dict = PyDict::new(py);
+        dict.set_item("base_seed", self.base_seed)?;
+        dict.set_item("episodes", self.episodes.clone())?;
+        dict.set_item("game_steps", self.game_steps.clone())?;
+        dict.set_item("feature_schema", self.feature_schema.name)?;
+        let games = PyList::empty(py);
+        for game in &self.envs {
+            games.append(game_state_to_py(py, game.state())?)?;
+        }
+        dict.set_item("games", games)?;
+        Ok(dict.into_any().unbind())
+    }
+
+    pub fn load_state(&mut self, py: Python<'_>, state: &Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
+        let dict = state.cast::<PyDict>()?;
+        let schema_name: String = required_item(dict, "feature_schema")?.extract()?;
+        let schema = FeatureSchema::parse(&schema_name)?;
+        if schema.name != self.feature_schema.name {
+            return Err(PyValueError::new_err(format!(
+                "environment state uses {}, environment uses {}",
+                schema.name, self.feature_schema.name
+            )));
+        }
+        let episodes: Vec<u64> = required_item(dict, "episodes")?.extract()?;
+        let game_steps: Vec<u64> = required_item(dict, "game_steps")?.extract()?;
+        let raw_games = required_item(dict, "games")?;
+        let game_items = raw_games.cast::<PyList>()?;
+        if episodes.len() != self.envs.len()
+            || game_steps.len() != self.envs.len()
+            || game_items.len() != self.envs.len()
+        {
+            return Err(PyValueError::new_err(
+                "environment state length does not match num_envs",
+            ));
+        }
+        let games = game_items
+            .iter()
+            .map(|item| {
+                let state = game_state_from_py(&item)?;
+                Game::from_state(state, Rules::canonical_v1())
+                    .map_err(|error| PyValueError::new_err(error.to_string()))
+            })
+            .collect::<PyResult<Vec<_>>>()?;
+        self.base_seed = required_item(dict, "base_seed")?.extract()?;
+        self.episodes = episodes;
+        self.game_steps = game_steps;
+        self.envs = games;
 
         let arrays = self.snapshot()?;
         batch_to_dict(
@@ -282,6 +413,8 @@ fn _jackbot(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add("OBS_SIZE", OBS_SIZE)?;
     m.add("ACTION_SIZE", ACTION_SIZE)?;
     m.add("BELIEF_SIZE", BELIEF_SIZE)?;
+    m.add("PUBLIC_HISTORY_SIZE", PUBLIC_HISTORY_SIZE)?;
+    m.add("ACTION_CONSEQUENCE_SIZE", ACTION_CONSEQUENCE_SIZE)?;
     Ok(())
 }
 
@@ -289,6 +422,9 @@ impl BatchEnv {
     fn snapshot(&self) -> PyResult<BatchArrays> {
         let mut obs = Vec::with_capacity(self.envs.len() * OBS_SIZE);
         let mut action_features = Vec::new();
+        let mut public_history =
+            Vec::with_capacity(self.envs.len() * self.feature_schema.history_size());
+        let mut action_consequences = Vec::new();
         let mut action_offsets = Vec::with_capacity(self.envs.len() + 1);
         let mut env_ids = Vec::new();
         let mut current_players = Vec::with_capacity(self.envs.len());
@@ -303,10 +439,20 @@ impl BatchEnv {
                 .observation(player)
                 .map_err(|err| PyValueError::new_err(err.to_string()))?;
             obs.extend(encode_observation(&observation, game.rules()));
+            if self.feature_schema.public_history {
+                public_history.extend(encode_public_history(&observation));
+            }
 
             let legal_actions = game.legal_actions();
             for action in &legal_actions {
                 action_features.extend(encode_action_features(player, action));
+                if self.feature_schema.action_consequences {
+                    action_consequences.extend(encode_action_consequences(
+                        player,
+                        &game.action_result_marbles(action),
+                        game.rules(),
+                    ));
+                }
                 env_ids.push(env_index as i64);
             }
             action_count += legal_actions.len();
@@ -325,13 +471,20 @@ impl BatchEnv {
             env_ids,
             current_players,
             belief_targets,
+            public_history,
+            action_consequences,
             env_count: self.envs.len(),
             action_count,
+            feature_schema: self.feature_schema,
         })
     }
 }
 
-fn snapshot_game(game: &Game, env_index: usize) -> PyResult<BatchArrays> {
+fn snapshot_game(
+    game: &Game,
+    env_index: usize,
+    feature_schema: FeatureSchema,
+) -> PyResult<BatchArrays> {
     let player = game.current_player();
     let observation = game
         .observation(player)
@@ -352,8 +505,28 @@ fn snapshot_game(game: &Game, env_index: usize) -> PyResult<BatchArrays> {
         env_ids: vec![env_index as i64; action_count],
         current_players: vec![player as i64],
         belief_targets: flatten_targets(targets),
+        public_history: if feature_schema.public_history {
+            encode_public_history(&observation)
+        } else {
+            Vec::new()
+        },
+        action_consequences: if feature_schema.action_consequences {
+            legal_actions
+                .iter()
+                .flat_map(|action| {
+                    encode_action_consequences(
+                        player,
+                        &game.action_result_marbles(action),
+                        game.rules(),
+                    )
+                })
+                .collect()
+        } else {
+            Vec::new()
+        },
         env_count: 1,
         action_count,
+        feature_schema,
     })
 }
 
@@ -419,6 +592,25 @@ fn batch_to_dict(
             &[env_count, BELIEF_SIZE],
         )?,
     )?;
+    dict.set_item(
+        "public_history",
+        numpy_array(
+            py,
+            arrays.public_history,
+            "float32",
+            &[env_count, arrays.feature_schema.history_size()],
+        )?,
+    )?;
+    dict.set_item(
+        "action_consequences",
+        numpy_array(
+            py,
+            arrays.action_consequences,
+            "float32",
+            &[action_count, arrays.feature_schema.consequence_size()],
+        )?,
+    )?;
+    dict.set_item("feature_schema", arrays.feature_schema.name)?;
     dict.set_item(
         "rewards",
         numpy_array(py, rewards, "float32", &[env_count])?,
@@ -497,6 +689,14 @@ fn game_state_from_py(state: &Bound<'_, PyAny>) -> PyResult<GameState> {
         .flatten()
         .map(team_from_index)
         .transpose()?;
+    let public_history = match optional_item(dict, "public_history")? {
+        Some(value) => value
+            .cast::<PyList>()?
+            .iter()
+            .map(|item| public_action_from_py(&item))
+            .collect::<PyResult<Vec<_>>>()?,
+        None => Vec::new(),
+    };
 
     Ok(GameState {
         rng_state,
@@ -507,6 +707,7 @@ fn game_state_from_py(state: &Bound<'_, PyAny>) -> PyResult<GameState> {
         current_player: required_item(dict, "current_player")?.extract()?,
         turn_index: required_item(dict, "turn_index")?.extract()?,
         deal_round_index: required_item(dict, "deal_round_index")?.extract()?,
+        public_history,
         winner,
     })
 }
@@ -538,6 +739,11 @@ fn game_state_to_py(py: Python<'_>, state: GameState) -> PyResult<Py<PyAny>> {
     dict.set_item("current_player", state.current_player)?;
     dict.set_item("turn_index", state.turn_index)?;
     dict.set_item("deal_round_index", state.deal_round_index)?;
+    let public_history = PyList::empty(py);
+    for action in &state.public_history {
+        public_history.append(public_action_to_py(py, action)?)?;
+    }
+    dict.set_item("public_history", public_history)?;
     dict.set_item("winner", state.winner.map(Team::index))?;
     Ok(dict.into_any().unbind())
 }
@@ -577,6 +783,171 @@ fn location_parts(location: MarbleLocation) -> (&'static str, u8) {
         MarbleLocation::Track { distance } => ("track", distance),
         MarbleLocation::Home { slot } => ("home", slot),
     }
+}
+
+fn public_action_from_py(value: &Bound<'_, PyAny>) -> PyResult<PublicAction> {
+    let dict = value.cast::<PyDict>()?;
+    let card = optional_usize(dict, "card")?
+        .map(|id| {
+            Card::from_id(id).ok_or_else(|| PyValueError::new_err(format!("invalid card id {id}")))
+        })
+        .transpose()?;
+    let forced_discard = match optional_item(dict, "forced_discard")? {
+        Some(value) if !value.is_none() => {
+            let discard = value.cast::<PyDict>()?;
+            let discard_card = optional_usize(discard, "card")?
+                .map(|id| {
+                    Card::from_id(id)
+                        .ok_or_else(|| PyValueError::new_err(format!("invalid card id {id}")))
+                })
+                .transpose()?;
+            Some(PublicDiscard {
+                player: required_item(discard, "player")?.extract()?,
+                card: discard_card,
+            })
+        }
+        _ => None,
+    };
+    Ok(PublicAction {
+        player: required_item(dict, "player")?.extract()?,
+        card,
+        kind: action_kind_from_py(dict)?,
+        forced_discard,
+    })
+}
+
+fn public_action_to_py<'py>(
+    py: Python<'py>,
+    action: &PublicAction,
+) -> PyResult<Bound<'py, PyDict>> {
+    let dict = PyDict::new(py);
+    dict.set_item("player", action.player)?;
+    dict.set_item("card", action.card.map(Card::id))?;
+    set_action_kind_fields(&dict, &action.kind)?;
+    if let Some(discard) = &action.forced_discard {
+        let forced = PyDict::new(py);
+        forced.set_item("player", discard.player)?;
+        forced.set_item("card", discard.card.map(Card::id))?;
+        dict.set_item("forced_discard", forced)?;
+    } else {
+        dict.set_item("forced_discard", py.None())?;
+    }
+    Ok(dict)
+}
+
+fn action_kind_from_py(dict: &Bound<'_, PyDict>) -> PyResult<ActionKind> {
+    let kind: String = required_item(dict, "kind")?.extract()?;
+    match kind.as_str() {
+        "enter" => Ok(ActionKind::Enter {
+            owner: required_item(dict, "owner")?.extract()?,
+            marble_index: required_item(dict, "marble")?.extract()?,
+        }),
+        "move" => {
+            let direction: String = required_item(dict, "direction")?.extract()?;
+            let direction = match direction.as_str() {
+                "forward" => Direction::Forward,
+                "backward" => Direction::Backward,
+                _ => {
+                    return Err(PyValueError::new_err(format!(
+                        "unknown move direction {direction:?}"
+                    )));
+                }
+            };
+            Ok(ActionKind::Move {
+                owner: required_item(dict, "owner")?.extract()?,
+                marble_index: required_item(dict, "marble")?.extract()?,
+                steps: required_item(dict, "steps")?.extract()?,
+                direction,
+                bulldozer: optional_item(dict, "bulldozer")?
+                    .map(|value| value.extract())
+                    .transpose()?
+                    .unwrap_or(false),
+            })
+        }
+        "split" => Ok(ActionKind::SplitSeven {
+            first: MoveLeg {
+                owner: required_item(dict, "owner")?.extract()?,
+                marble_index: required_item(dict, "marble")?.extract()?,
+                steps: required_item(dict, "steps")?.extract()?,
+            },
+            second: MoveLeg {
+                owner: required_item(dict, "second_owner")?.extract()?,
+                marble_index: required_item(dict, "second_marble")?.extract()?,
+                steps: required_item(dict, "second_steps")?.extract()?,
+            },
+        }),
+        "swap" => Ok(ActionKind::Swap {
+            owner: required_item(dict, "owner")?.extract()?,
+            marble_index: required_item(dict, "marble")?.extract()?,
+            target_player: required_item(dict, "target_owner")?.extract()?,
+            target_marble_index: required_item(dict, "target_marble")?.extract()?,
+        }),
+        "skip" => Ok(ActionKind::SkipNext),
+        "burn" => Ok(ActionKind::Burn),
+        "pass" => Ok(ActionKind::PassNoCards),
+        _ => Err(PyValueError::new_err(format!(
+            "unknown public action kind {kind:?}"
+        ))),
+    }
+}
+
+fn set_action_kind_fields(dict: &Bound<'_, PyDict>, kind: &ActionKind) -> PyResult<()> {
+    match kind {
+        ActionKind::Enter {
+            owner,
+            marble_index,
+        } => {
+            dict.set_item("kind", "enter")?;
+            dict.set_item("owner", *owner)?;
+            dict.set_item("marble", *marble_index)?;
+        }
+        ActionKind::Move {
+            owner,
+            marble_index,
+            steps,
+            direction,
+            bulldozer,
+        } => {
+            dict.set_item("kind", "move")?;
+            dict.set_item("owner", *owner)?;
+            dict.set_item("marble", *marble_index)?;
+            dict.set_item("steps", *steps)?;
+            dict.set_item("direction", direction_label(*direction))?;
+            dict.set_item("bulldozer", *bulldozer)?;
+        }
+        ActionKind::SplitSeven { first, second } => {
+            dict.set_item("kind", "split")?;
+            dict.set_item("owner", first.owner)?;
+            dict.set_item("marble", first.marble_index)?;
+            dict.set_item("steps", first.steps)?;
+            dict.set_item("second_owner", second.owner)?;
+            dict.set_item("second_marble", second.marble_index)?;
+            dict.set_item("second_steps", second.steps)?;
+        }
+        ActionKind::Swap {
+            owner,
+            marble_index,
+            target_player,
+            target_marble_index,
+        } => {
+            dict.set_item("kind", "swap")?;
+            dict.set_item("owner", *owner)?;
+            dict.set_item("marble", *marble_index)?;
+            dict.set_item("target_owner", *target_player)?;
+            dict.set_item("target_marble", *target_marble_index)?;
+        }
+        ActionKind::SkipNext => dict.set_item("kind", "skip")?,
+        ActionKind::Burn => dict.set_item("kind", "burn")?,
+        ActionKind::PassNoCards => dict.set_item("kind", "pass")?,
+    }
+    Ok(())
+}
+
+fn optional_usize(dict: &Bound<'_, PyDict>, key: &str) -> PyResult<Option<usize>> {
+    optional_item(dict, key)?
+        .map(|value| value.extract::<Option<usize>>())
+        .transpose()
+        .map(Option::flatten)
 }
 
 fn action_detail<'py>(
@@ -745,38 +1116,152 @@ fn encode_observation(observation: &Observation, rules: &Rules) -> Vec<f32> {
                 .iter()
                 .find(|marble| marble.owner == owner && marble.index == marble_index)
                 .expect("observation contains every marble");
-            match marble.location {
-                MarbleLocation::Base => {
-                    values.extend([1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]);
-                }
-                MarbleLocation::Track { distance } => {
-                    values.extend([
-                        0.0,
-                        1.0,
-                        0.0,
-                        f32::from(distance) / f32::from(rules.track_len - 1),
-                        0.0,
-                        0.0,
-                        if distance == 0 { 1.0 } else { 0.0 },
-                    ]);
-                }
-                MarbleLocation::Home { slot } => {
-                    values.extend([
-                        0.0,
-                        0.0,
-                        1.0,
-                        1.0,
-                        0.0,
-                        f32::from(slot) / f32::from(rules.home_len - 1),
-                        0.0,
-                    ]);
-                }
-            }
+            push_marble_location(&mut values, marble.location, rules);
         }
     }
 
     debug_assert_eq!(values.len(), OBS_SIZE);
     values
+}
+
+fn encode_public_history(observation: &Observation) -> Vec<f32> {
+    let mut values = Vec::with_capacity(PUBLIC_HISTORY_SIZE);
+    for action in observation
+        .public_history
+        .iter()
+        .rev()
+        .take(PUBLIC_HISTORY_LIMIT)
+    {
+        values.push(1.0);
+        push_one_hot(
+            &mut values,
+            relative_player(observation.player, action.player),
+            NUM_PLAYERS,
+        );
+        push_card_rank_and_suit(&mut values, action.card);
+
+        let (action_type, primary, secondary, steps, second_steps, bulldozer) = match &action.kind {
+            ActionKind::Enter {
+                owner,
+                marble_index,
+            } => (0, Some((*owner, *marble_index)), None, 0, 0, false),
+            ActionKind::Move {
+                owner,
+                marble_index,
+                steps,
+                direction,
+                bulldozer,
+            } => (
+                1,
+                Some((*owner, *marble_index)),
+                None,
+                match direction {
+                    Direction::Forward => *steps as i8,
+                    Direction::Backward => -(*steps as i8),
+                },
+                0,
+                *bulldozer,
+            ),
+            ActionKind::SplitSeven { first, second } => (
+                2,
+                Some((first.owner, first.marble_index)),
+                Some((second.owner, second.marble_index)),
+                first.steps as i8,
+                second.steps as i8,
+                false,
+            ),
+            ActionKind::Swap {
+                owner,
+                marble_index,
+                target_player,
+                target_marble_index,
+            } => (
+                3,
+                Some((*owner, *marble_index)),
+                Some((*target_player, *target_marble_index)),
+                0,
+                0,
+                false,
+            ),
+            ActionKind::SkipNext => (4, None, None, 0, 0, false),
+            ActionKind::Burn => (5, None, None, 0, 0, false),
+            ActionKind::PassNoCards => (6, None, None, 0, 0, false),
+        };
+        push_one_hot(&mut values, action_type, 7);
+        push_history_marble(&mut values, observation.player, primary);
+        push_history_marble(&mut values, observation.player, secondary);
+        values.push(f32::from(steps) / 13.0);
+        values.push(f32::from(second_steps) / 7.0);
+        values.push(if bulldozer { 1.0 } else { 0.0 });
+        push_card_rank_and_suit(
+            &mut values,
+            action
+                .forced_discard
+                .as_ref()
+                .and_then(|discard| discard.card),
+        );
+    }
+    values.resize(PUBLIC_HISTORY_SIZE, 0.0);
+    debug_assert_eq!(values.len(), PUBLIC_HISTORY_SIZE);
+    values
+}
+
+fn encode_action_consequences(player: usize, marbles: &[MarbleState], rules: &Rules) -> Vec<f32> {
+    let mut values = Vec::with_capacity(ACTION_CONSEQUENCE_SIZE);
+    for owner_offset in 0..NUM_PLAYERS {
+        let owner = (player + owner_offset) % NUM_PLAYERS;
+        for marble_index in 0..MARBLES_PER_PLAYER {
+            let marble = marbles
+                .iter()
+                .find(|marble| marble.owner == owner && marble.index == marble_index)
+                .expect("action result contains every marble");
+            push_marble_location(&mut values, marble.location, rules);
+        }
+    }
+    debug_assert_eq!(values.len(), ACTION_CONSEQUENCE_SIZE);
+    values
+}
+
+fn push_marble_location(values: &mut Vec<f32>, location: MarbleLocation, rules: &Rules) {
+    match location {
+        MarbleLocation::Base => values.extend([1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]),
+        MarbleLocation::Track { distance } => values.extend([
+            0.0,
+            1.0,
+            0.0,
+            f32::from(distance) / f32::from(rules.track_len - 1),
+            0.0,
+            0.0,
+            if distance == 0 { 1.0 } else { 0.0 },
+        ]),
+        MarbleLocation::Home { slot } => values.extend([
+            0.0,
+            0.0,
+            1.0,
+            1.0,
+            0.0,
+            f32::from(slot) / f32::from(rules.home_len - 1),
+            0.0,
+        ]),
+    }
+}
+
+fn push_card_rank_and_suit(values: &mut Vec<f32>, card: Option<Card>) {
+    if let Some(card) = card {
+        push_one_hot(values, card.id() % 13, 13);
+        push_one_hot(values, card.id() / 13, 4);
+    } else {
+        values.extend([0.0; 17]);
+    }
+}
+
+fn push_history_marble(values: &mut Vec<f32>, perspective: usize, marble: Option<(usize, usize)>) {
+    if let Some((owner, index)) = marble {
+        push_one_hot(values, relative_player(perspective, owner), NUM_PLAYERS);
+        push_one_hot(values, index, MARBLES_PER_PLAYER);
+    } else {
+        values.extend([0.0; NUM_PLAYERS + MARBLES_PER_PLAYER]);
+    }
 }
 
 fn encode_action_features(player: usize, action: &LegalAction) -> Vec<f32> {
@@ -1186,7 +1671,7 @@ mod tests {
 
     #[test]
     fn batch_offsets_match_legal_action_count() {
-        let env = BatchEnv::new(3, 1).unwrap();
+        let env = BatchEnv::new(3, 1, "base_v1").unwrap();
         let arrays = env.snapshot().unwrap();
 
         assert_eq!(arrays.obs.len(), 3 * OBS_SIZE);
@@ -1200,5 +1685,36 @@ mod tests {
             arrays.action_count * ACTION_SIZE
         );
         assert_eq!(arrays.env_ids.len(), arrays.action_count);
+    }
+
+    #[test]
+    fn enhanced_feature_schemas_have_fixed_sizes() {
+        for (schema, history_size, consequence_size) in [
+            ("base_v1", 0, 0),
+            ("a1", 0, ACTION_CONSEQUENCE_SIZE),
+            ("h1", PUBLIC_HISTORY_SIZE, 0),
+            ("a1h1", PUBLIC_HISTORY_SIZE, ACTION_CONSEQUENCE_SIZE),
+        ] {
+            let env = BatchEnv::new(2, 1, schema).unwrap();
+            let arrays = env.snapshot().unwrap();
+            assert_eq!(arrays.public_history.len(), 2 * history_size);
+            assert_eq!(
+                arrays.action_consequences.len(),
+                arrays.action_count * consequence_size
+            );
+        }
+    }
+
+    #[test]
+    fn public_history_encoder_records_applied_action() {
+        let mut game = Game::new(1, Rules::canonical_v1());
+        let action = game.legal_actions()[0].id;
+        game.step(action).unwrap();
+        let observation = game.observation(game.current_player()).unwrap();
+        let history = encode_public_history(&observation);
+
+        assert_eq!(history.len(), PUBLIC_HISTORY_SIZE);
+        assert_eq!(history[0], 1.0);
+        assert!(history.iter().any(|value| *value != 0.0));
     }
 }

@@ -26,13 +26,15 @@ def test_benchmark_checks_require_baselines_and_champion_lower_ci() -> None:
         BenchmarkThresholds(
             random_floor=0.99,
             heuristic_floor=0.965,
-            champion_lower_ci_floor=0.55,
+            champion_win_rate_floor=0.57,
+            champion_lower_ci_floor=0.525,
         ),
     )
 
     assert [check.name for check in checks] == [
         "random_floor",
         "heuristic_floor",
+        "champion_win_rate",
         "champion_lower_ci",
     ]
     assert all(check.passed for check in checks)
@@ -44,7 +46,7 @@ def test_benchmark_checks_fail_weak_champion_margin() -> None:
         opponents=[
             _opponent("random", wins=1000, games=1000),
             _opponent("heuristic", wins=970, games=1000),
-            _opponent("champion.pt", wins=560, games=1000),
+            _opponent("champion.pt", wins=540, games=1000),
         ],
     )
 
@@ -52,6 +54,20 @@ def test_benchmark_checks_fail_weak_champion_margin() -> None:
 
     assert checks[-1].name == "champion_lower_ci"
     assert checks[-1].passed is False
+
+
+def test_benchmark_checks_fail_closed_when_required_opponents_are_missing() -> None:
+    result = GauntletResult(candidate="candidate.pt", opponents=[])
+
+    checks = benchmark_checks(result, "champion.pt")
+
+    assert [check.name for check in checks] == [
+        "random_floor",
+        "heuristic_floor",
+        "champion_win_rate",
+        "champion_lower_ci",
+    ]
+    assert not any(check.passed for check in checks)
 
 
 def test_benchmark_default_ladder_discovers_checkpoints_without_candidate(tmp_path) -> None:

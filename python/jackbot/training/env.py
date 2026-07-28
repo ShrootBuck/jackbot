@@ -5,7 +5,14 @@ from dataclasses import dataclass
 import numpy as np
 import torch
 
-from jackbot import ACTION_SIZE, BELIEF_SIZE, OBS_SIZE, BatchEnv
+from jackbot import (
+    ACTION_CONSEQUENCE_SIZE,
+    ACTION_SIZE,
+    BELIEF_SIZE,
+    OBS_SIZE,
+    PUBLIC_HISTORY_SIZE,
+    BatchEnv,
+)
 
 
 ACTION_TYPE_START = 53
@@ -30,6 +37,8 @@ class TensorBatch:
     env_ids: torch.Tensor
     current_players: torch.Tensor
     belief_targets: torch.Tensor
+    public_history: torch.Tensor
+    action_consequences: torch.Tensor
     rewards: torch.Tensor
     team_rewards: torch.Tensor
     dones: torch.Tensor
@@ -40,20 +49,32 @@ class TensorBatch:
     game_lengths: torch.Tensor
 
 
-def make_env(num_envs: int, seed: int) -> BatchEnv:
-    return BatchEnv(num_envs, seed)
+def make_env(num_envs: int, seed: int, feature_schema: str = "base_v1") -> BatchEnv:
+    return BatchEnv(num_envs, seed, feature_schema)
 
 
 def to_tensors(batch: dict[str, np.ndarray], device: torch.device) -> TensorBatch:
     obs = _float(batch["obs"], device)
     action_features = _float(batch["action_features"], device)
     belief_targets = _float(batch["belief_targets"], device)
+    public_history = _float(batch["public_history"], device)
+    action_consequences = _float(batch["action_consequences"], device)
     if obs.shape[-1] != OBS_SIZE:
         raise ValueError(f"expected obs size {OBS_SIZE}, got {obs.shape[-1]}")
     if action_features.shape[-1] != ACTION_SIZE:
         raise ValueError(f"expected action size {ACTION_SIZE}, got {action_features.shape[-1]}")
     if belief_targets.shape[-1] != BELIEF_SIZE:
         raise ValueError(f"expected belief size {BELIEF_SIZE}, got {belief_targets.shape[-1]}")
+    if public_history.shape[-1] not in {0, PUBLIC_HISTORY_SIZE}:
+        raise ValueError(
+            f"expected public history size 0 or {PUBLIC_HISTORY_SIZE}, "
+            f"got {public_history.shape[-1]}"
+        )
+    if action_consequences.shape[-1] not in {0, ACTION_CONSEQUENCE_SIZE}:
+        raise ValueError(
+            f"expected action consequence size 0 or {ACTION_CONSEQUENCE_SIZE}, "
+            f"got {action_consequences.shape[-1]}"
+        )
     return TensorBatch(
         obs=obs,
         action_features=action_features,
@@ -61,6 +82,8 @@ def to_tensors(batch: dict[str, np.ndarray], device: torch.device) -> TensorBatc
         env_ids=_long(batch["env_ids"], device),
         current_players=_long(batch["current_players"], device),
         belief_targets=belief_targets,
+        public_history=public_history,
+        action_consequences=action_consequences,
         rewards=_float(batch["rewards"], device),
         team_rewards=_float(batch["team_rewards"], device),
         dones=torch.as_tensor(batch["dones"], device=device, dtype=torch.bool),

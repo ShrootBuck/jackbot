@@ -25,6 +25,7 @@ jackbot-watch = "jackbot.training.watch:main"
 jackbot-search = "jackbot.training.search:main"
 jackbot-distill = "jackbot.training.distill:main"
 jackbot-advisor = "jackbot.training.advisor:main"
+jackbot-screen = "jackbot.training.candidate_screen:main"
 
 [dependency-groups]
 dev = [

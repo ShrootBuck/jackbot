@@ -6,9 +6,9 @@ from pathlib import Path
 
 import torch
 
-from jackbot.training.checkpoint import default_checkpoint_path
+from jackbot.training.checkpoint import checkpoint_config_from_payload, default_checkpoint_path
 from jackbot.training.config import TrainConfig
-from jackbot.training.model import JackbotNet
+from jackbot.training.model import JackbotNet, make_model
 from jackbot.training.policies import BaselinePolicy, ModelPolicy, evaluate_match
 from jackbot.training.runtime import CPU_DEVICE, training_device
 
@@ -49,8 +49,8 @@ def evaluate_model(
 
 def load_model(path: Path) -> tuple[JackbotNet, TrainConfig]:
     checkpoint = torch.load(path, map_location=CPU_DEVICE, weights_only=False)
-    config = TrainConfig.from_dict(checkpoint["config"])
-    model = JackbotNet(config.hidden_size).to(CPU_DEVICE)
+    config = checkpoint_config_from_payload(checkpoint)
+    model = make_model(config).to(CPU_DEVICE)
     model.load_state_dict(checkpoint["model"])
     return model, config
 

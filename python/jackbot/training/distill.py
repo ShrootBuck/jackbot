@@ -12,9 +12,9 @@ import torch.nn.functional as F
 
 from jackbot import PlayGame
 from jackbot.training.checkpoint import save_checkpoint
-from jackbot.training.config import TrainConfig
+from jackbot.training.config import TrainConfig, union_feature_schemas
 from jackbot.training.env import to_tensors
-from jackbot.training.model import JackbotNet
+from jackbot.training.model import make_model
 from jackbot.training.ops import segment_env_ids
 from jackbot.training.policies import ModelPolicy, Policy, load_model_policy, policy_from_spec
 from jackbot.training.runtime import training_device
@@ -58,20 +58,24 @@ def collect_targets(args: argparse.Namespace) -> None:
     device = training_device()
     model_policy, _ = load_model_policy(args.checkpoint)
     opponents = _load_opponents(args.opponent or ["self"], model_policy)
+    feature_schema = union_feature_schemas(
+        model_policy.feature_schema,
+        *(opponent.feature_schema for opponent in opponents),
+    )
     output_paths = target_output_paths(args.output, args.shards)
     for path in output_paths:
         path.parent.mkdir(parents=True, exist_ok=True)
 
     written = 0
     game_seed = args.seed
-    game = PlayGame(game_seed)
+    game = PlayGame(game_seed, feature_schema)
     with ExitStack() as stack:
         handles = [stack.enter_context(path.open("w")) for path in output_paths]
         while written < args.positions:
             _advance_game(game, model_policy, device, args.warmup_steps)
             if game.winner() is not None:
                 game_seed += 1
-                game = PlayGame(game_seed)
+                game = PlayGame(game_seed, feature_schema)
                 continue
 
             opponent = opponents[written % len(opponents)]
@@ -91,29 +95,50 @@ def collect_targets(args: argparse.Namespace) -> None:
             _advance_game(game, model_policy, device, 1)
             if game.winner() is not None:
                 game_seed += 1
-                game = PlayGame(game_seed)
+                game = PlayGame(game_seed, feature_schema)
 
 
 def train_distillation(args: argparse.Namespace) -> None:
     device = training_device()
     examples = _read_examples(args.input)
+    if not examples:
+        raise ValueError("no distillation examples found")
+    schemas = {str(example.get("feature_schema", "base_v1")) for example in examples}
+    if len(schemas) != 1:
+        raise ValueError(f"distillation examples mix feature schemas: {sorted(schemas)}")
+    feature_schema = schemas.pop()
     if args.base_checkpoint is not None:
         base_policy, config = load_model_policy(args.base_checkpoint)
+        if config.feature_schema != feature_schema:
+            raise ValueError(
+                f"examples use {feature_schema}, base checkpoint uses {config.feature_schema}"
+            )
         model = base_policy.model
     else:
-        config = TrainConfig(hidden_size=args.hidden_size)
-        model = JackbotNet(config.hidden_size).to(device)
-    optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr)
+        config = TrainConfig(hidden_size=args.hidden_size, feature_schema=feature_schema)
+        model = make_model(config).to(device)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=config.weight_decay)
 
     for epoch in range(args.epochs):
         random.shuffle(examples)
         losses = []
         for batch in _chunks(examples, args.batch_size):
-            obs, action_features, action_offsets, target_probs, value_targets = _batch_examples(
-                batch,
-                device,
+            (
+                obs,
+                action_features,
+                action_offsets,
+                public_history,
+                action_consequences,
+                target_probs,
+                value_targets,
+            ) = _batch_examples(batch, device)
+            output = model(
+                obs,
+                action_features,
+                action_offsets,
+                public_history=public_history,
+                action_consequences=action_consequences,
             )
-            output = model(obs, action_features, action_offsets)
             env_ids = segment_env_ids(action_offsets)
             policy_loss = torch.zeros(obs.shape[0], device=device)
             policy_loss.scatter_add_(0, env_ids, -(target_probs * output.log_probs))
@@ -194,9 +219,19 @@ def _chunks(items: list[dict[str, Any]], size: int):
 def _batch_examples(
     examples: list[dict[str, Any]],
     device: torch.device,
-) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+) -> tuple[
+    torch.Tensor,
+    torch.Tensor,
+    torch.Tensor,
+    torch.Tensor,
+    torch.Tensor,
+    torch.Tensor,
+    torch.Tensor,
+]:
     obs = torch.tensor([example["obs"] for example in examples], device=device, dtype=torch.float32)
     features = []
+    histories = []
+    consequences = []
     probs = []
     offsets = [0]
     total = 0
@@ -205,6 +240,8 @@ def _batch_examples(
         action_features = example["action_features"]
         target_probs = example["target_probs"]
         features.extend(action_features)
+        histories.append(example.get("public_history", []))
+        consequences.extend(example.get("action_consequences", [[] for _ in action_features]))
         probs.extend(target_probs)
         total += len(action_features)
         offsets.append(total)
@@ -214,6 +251,8 @@ def _batch_examples(
         obs,
         torch.tensor(features, device=device, dtype=torch.float32),
         torch.tensor(offsets, device=device, dtype=torch.long),
+        torch.tensor(histories, device=device, dtype=torch.float32),
+        torch.tensor(consequences, device=device, dtype=torch.float32),
         torch.tensor(probs, device=device, dtype=torch.float32),
         torch.tensor(values, device=device, dtype=torch.float32),
     )

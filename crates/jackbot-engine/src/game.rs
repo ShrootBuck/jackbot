@@ -4,6 +4,7 @@ use crate::{Card, Rank, Rules, Suit, rng::SmallRng};
 
 pub const NUM_PLAYERS: usize = 4;
 pub const MARBLES_PER_PLAYER: usize = 4;
+pub const PUBLIC_HISTORY_LIMIT: usize = 8;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Team {
@@ -128,6 +129,20 @@ pub struct ActionFeatures {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PublicDiscard {
+    pub player: usize,
+    pub card: Option<Card>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PublicAction {
+    pub player: usize,
+    pub card: Option<Card>,
+    pub kind: ActionKind,
+    pub forced_discard: Option<PublicDiscard>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Observation {
     pub player: usize,
     pub current_player: usize,
@@ -137,6 +152,7 @@ pub struct Observation {
     pub discard_counts: [u8; 52],
     pub deck_remaining: usize,
     pub marbles: Vec<ObservedMarble>,
+    pub public_history: Vec<PublicAction>,
     pub winner: Option<Team>,
 }
 
@@ -174,6 +190,7 @@ pub struct GameState {
     pub current_player: usize,
     pub turn_index: u64,
     pub deal_round_index: usize,
+    pub public_history: Vec<PublicAction>,
     pub winner: Option<Team>,
 }
 
@@ -214,6 +231,7 @@ pub struct Game {
     current_player: usize,
     turn_index: u64,
     deal_round_index: usize,
+    public_history: Vec<PublicAction>,
     winner: Option<Team>,
 }
 
@@ -253,6 +271,7 @@ impl Game {
             current_player: 0,
             turn_index: 0,
             deal_round_index: 0,
+            public_history: Vec::new(),
             winner: None,
         };
         game.deal_round();
@@ -273,6 +292,34 @@ impl Game {
                 NUM_PLAYERS * MARBLES_PER_PLAYER,
                 state.marbles.len()
             )));
+        }
+        if state.public_history.len() > PUBLIC_HISTORY_LIMIT {
+            return Err(GameError::InvalidState(format!(
+                "public history has {} records, maximum is {PUBLIC_HISTORY_LIMIT}",
+                state.public_history.len()
+            )));
+        }
+        for action in &state.public_history {
+            if action.player >= NUM_PLAYERS {
+                return Err(GameError::InvalidState(format!(
+                    "public action player {} is out of range",
+                    action.player
+                )));
+            }
+            if action
+                .forced_discard
+                .as_ref()
+                .is_some_and(|discard| discard.player >= NUM_PLAYERS)
+            {
+                return Err(GameError::InvalidState(
+                    "public forced-discard player is out of range".to_string(),
+                ));
+            }
+            if !valid_public_action_kind(&action.kind) {
+                return Err(GameError::InvalidState(
+                    "public action contains an invalid marble reference or step count".to_string(),
+                ));
+            }
         }
 
         let mut seen_cards = [false; 52];
@@ -348,6 +395,7 @@ impl Game {
             current_player: state.current_player,
             turn_index: state.turn_index,
             deal_round_index: state.deal_round_index,
+            public_history: state.public_history,
             winner: state.winner,
         })
     }
@@ -386,6 +434,7 @@ impl Game {
             current_player: self.current_player,
             turn_index: self.turn_index,
             deal_round_index: self.deal_round_index,
+            public_history: self.public_history.clone(),
             winner: self.winner,
         }
     }
@@ -631,6 +680,18 @@ impl Game {
         };
 
         let forced_discard = self.apply_action(&action, &mut events);
+        self.public_history.push(PublicAction {
+            player: previous,
+            card: played_card,
+            kind: action.kind.clone(),
+            forced_discard: forced_discard.map(|(player, card)| PublicDiscard {
+                player,
+                card: Some(card),
+            }),
+        });
+        if self.public_history.len() > PUBLIC_HISTORY_LIMIT {
+            self.public_history.remove(0);
+        }
         self.winner = self.compute_winner();
         let team_rewards = self.team_rewards(&events, self.winner);
 
@@ -676,6 +737,7 @@ impl Game {
             discard_counts,
             deck_remaining: self.deck.len(),
             marbles: self.observed_marbles(),
+            public_history: self.public_history.clone(),
             winner: self.winner,
         })
     }
@@ -694,6 +756,92 @@ impl Game {
         }
 
         Ok(targets)
+    }
+
+    pub fn action_result_marbles(&self, action: &LegalAction) -> Vec<MarbleState> {
+        let mut marbles = self.marbles.clone();
+        match action.kind {
+            ActionKind::Enter {
+                owner,
+                marble_index,
+            } => {
+                let captures = self
+                    .can_enter(&marbles, owner, marble_index)
+                    .expect("legal enter action remains legal");
+                for captured_idx in captures {
+                    marbles[captured_idx].location = MarbleLocation::Base;
+                }
+                let moving_idx = Self::marble_vec_index_in(&marbles, owner, marble_index);
+                marbles[moving_idx].location = MarbleLocation::Track { distance: 0 };
+            }
+            ActionKind::Move {
+                owner,
+                marble_index,
+                steps,
+                direction,
+                bulldozer,
+            } => {
+                let simulation = self
+                    .simulate_move(&marbles, owner, marble_index, steps, direction, bulldozer)
+                    .expect("legal move action remains legal");
+                Self::apply_simulation_to_marbles(&mut marbles, owner, marble_index, simulation);
+            }
+            ActionKind::SplitSeven { first, second } => {
+                let first_simulation = self
+                    .simulate_move(
+                        &marbles,
+                        first.owner,
+                        first.marble_index,
+                        first.steps,
+                        Direction::Forward,
+                        false,
+                    )
+                    .expect("legal split first leg remains legal");
+                Self::apply_simulation_to_marbles(
+                    &mut marbles,
+                    first.owner,
+                    first.marble_index,
+                    first_simulation,
+                );
+                let second_simulation = self
+                    .simulate_move(
+                        &marbles,
+                        second.owner,
+                        second.marble_index,
+                        second.steps,
+                        Direction::Forward,
+                        false,
+                    )
+                    .expect("legal split second leg remains legal");
+                Self::apply_simulation_to_marbles(
+                    &mut marbles,
+                    second.owner,
+                    second.marble_index,
+                    second_simulation,
+                );
+            }
+            ActionKind::Swap {
+                owner,
+                marble_index,
+                target_player,
+                target_marble_index,
+            } => self.swap_marbles_in(
+                &mut marbles,
+                owner,
+                marble_index,
+                target_player,
+                target_marble_index,
+            ),
+            ActionKind::SkipNext | ActionKind::Burn | ActionKind::PassNoCards => {}
+        }
+        marbles
+            .into_iter()
+            .map(|marble| MarbleState {
+                owner: marble.owner,
+                index: marble.index,
+                location: marble.location,
+            })
+            .collect()
     }
 
     fn add_enter_actions(
@@ -1121,6 +1269,12 @@ impl Game {
         let entered_home = first_simulation.entered_home + second_simulation.entered_home;
         let captures =
             first_simulation.captures.len() as u8 + second_simulation.captures.len() as u8;
+        Self::apply_simulation_to_marbles(
+            &mut marbles,
+            second.owner,
+            second.marble_index,
+            second_simulation,
+        );
         Some((marbles, entered_home, captures))
     }
 
@@ -1341,6 +1495,28 @@ impl Game {
         };
     }
 
+    fn swap_marbles_in(
+        &self,
+        marbles: &mut [Marble],
+        owner: usize,
+        marble_index: usize,
+        target_player: usize,
+        target_marble_index: usize,
+    ) {
+        let source_idx = Self::marble_vec_index_in(marbles, owner, marble_index);
+        let target_idx = Self::marble_vec_index_in(marbles, target_player, target_marble_index);
+        let source_abs = self.absolute_track_index(&marbles[source_idx]);
+        let target_abs = self.absolute_track_index(&marbles[target_idx]);
+        let source_new_distance = self.relative_distance(owner, target_abs);
+        let target_new_distance = self.relative_distance(target_player, source_abs);
+        marbles[source_idx].location = MarbleLocation::Track {
+            distance: source_new_distance,
+        };
+        marbles[target_idx].location = MarbleLocation::Track {
+            distance: target_new_distance,
+        };
+    }
+
     fn deal_round(&mut self) {
         self.refill_deck_if_needed();
         let hand_size = self.rules.hand_cycle[self.deal_round_index % self.rules.hand_cycle.len()];
@@ -1516,6 +1692,40 @@ impl Game {
 fn push_unique(values: &mut Vec<usize>, value: usize) {
     if !values.contains(&value) {
         values.push(value);
+    }
+}
+
+fn valid_public_action_kind(kind: &ActionKind) -> bool {
+    let valid_marble =
+        |owner: usize, index: usize| owner < NUM_PLAYERS && index < MARBLES_PER_PLAYER;
+    match kind {
+        ActionKind::Enter {
+            owner,
+            marble_index,
+        } => valid_marble(*owner, *marble_index),
+        ActionKind::Move {
+            owner,
+            marble_index,
+            steps,
+            ..
+        } => valid_marble(*owner, *marble_index) && *steps > 0,
+        ActionKind::SplitSeven { first, second } => {
+            valid_marble(first.owner, first.marble_index)
+                && valid_marble(second.owner, second.marble_index)
+                && first.steps > 0
+                && second.steps > 0
+                && first.steps + second.steps == 7
+        }
+        ActionKind::Swap {
+            owner,
+            marble_index,
+            target_player,
+            target_marble_index,
+        } => {
+            valid_marble(*owner, *marble_index)
+                && valid_marble(*target_player, *target_marble_index)
+        }
+        ActionKind::SkipNext | ActionKind::Burn | ActionKind::PassNoCards => true,
     }
 }
 
@@ -2298,5 +2508,57 @@ mod tests {
             assert_eq!(first.current_player(), second.current_player());
             assert_eq!(first.winner(), second.winner());
         }
+    }
+
+    #[test]
+    fn action_result_marbles_match_applied_public_board() {
+        let game = Game::new(123, Rules::canonical_v1());
+
+        for action in game.legal_actions() {
+            let expected = game.action_result_marbles(&action);
+            let mut applied = game.clone();
+            applied.step(action.id).unwrap();
+
+            assert_eq!(expected, applied.state().marbles);
+        }
+    }
+
+    #[test]
+    fn public_history_is_bounded_and_survives_state_round_trip() {
+        let mut game = Game::new(456, Rules::canonical_v1());
+        for _ in 0..12 {
+            let actions = game.legal_actions();
+            if actions.is_empty() {
+                break;
+            }
+            game.step(0).unwrap();
+        }
+
+        assert_eq!(game.public_history.len(), PUBLIC_HISTORY_LIMIT);
+        let state = game.state();
+        let restored = Game::from_state(state.clone(), Rules::canonical_v1()).unwrap();
+        assert_eq!(restored.state().public_history, state.public_history);
+        assert_eq!(
+            restored
+                .observation(restored.current_player())
+                .unwrap()
+                .public_history,
+            state.public_history
+        );
+    }
+
+    #[test]
+    fn game_state_rejects_invalid_public_history_references() {
+        let mut game = Game::new(789, Rules::canonical_v1());
+        game.step(0).unwrap();
+        let mut state = game.state();
+        state.public_history[0].kind = ActionKind::Enter {
+            owner: NUM_PLAYERS,
+            marble_index: 0,
+        };
+
+        let error = Game::from_state(state, Rules::canonical_v1()).unwrap_err();
+
+        assert!(matches!(error, GameError::InvalidState(_)));
     }
 }

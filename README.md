@@ -33,7 +33,8 @@ Run a short local training job with W&B disabled:
 uv run jackbot-train --updates 10 --num-envs 64 --rollout-len 16 --no-wandb
 ```
 
-Run the long god-model training job:
+The old long god-model command still exists, but do not launch it while the
+candidate screen is the active plan:
 
 ```bash
 ./scripts/train_god.sh
@@ -46,6 +47,18 @@ Run the long god-model training job:
 Apple Silicon MacBook Pro every time, so prefer the existing artifact path from
 the prior run instead of copying files around for fake standardization. If none
 exists, pass `--resume PATH`.
+
+Preflight the candidate tournament:
+
+```bash
+uv run jackbot-screen --dry-run
+```
+
+Launch or resume all six candidate arms:
+
+```bash
+caffeinate -dimsu ./scripts/screen_candidates.sh
+```
 
 On the dedicated Mac, keep the machine awake:
 
@@ -87,6 +100,7 @@ Run the guided real-game advisor:
 
 ```bash
 uv run jackbot-advisor
+uv run jackbot-screen --dry-run
 ```
 
 Play against a checkpoint:
@@ -209,9 +223,11 @@ Genius fine-tune profile (`uv run jackbot-train --profile genius`, used by
 - `lr = 1e-4`
 - reward shaping disabled for resume-safe champion fine-tuning
 - side-swapped arena eval every 100 updates with 512 games
+- run-local best selection directly against the provisional/promoted champion
 - milestone archives every 250 updates
-- league training against heuristic, random, self-play, recent checkpoints, and
+- league training against heuristic, self-play, recent checkpoints, and
   any existing `checkpoints/champions/*.pt` or `checkpoints/distilled/*.pt`
+- category-balanced league mass: 55% self-play, 40% checkpoints, 5% heuristic
 - stochastic league opponents for more variety
 
 Useful direct commands:
@@ -230,16 +246,17 @@ uv run jackbot-play
 uv run jackbot-advisor
 ```
 
-Checkpoint tools default to `checkpoints/jackbot_best.pt`, falling back to the
-newest nested `jackbot_best.pt` under `checkpoints/`. Pass a checkpoint path
-only when you want a specific snapshot.
+Checkpoint tools prefer `checkpoints/champions/promoted.pt`, then the known
+provisional W&B champion, before falling back to run-local best/latest files.
+Pass a checkpoint path when you intentionally want an unpromoted snapshot.
 
 The "God model" path is not just longer PPO. The repo now supports:
 
 - side-swapped gauntlets against baselines and checkpoints, with 95% confidence
   intervals
 - a hard benchmark ladder that requires no random/heuristic regression and a
-  lower-confidence win over the current champion
+  57% direct win rate plus a 52.5% lower-confidence bound over the current
+  champion
 - league rollouts where the learner trains against random, heuristic, prior
   checkpoints, and current self-play
 - W&B model artifacts for saved checkpoints
@@ -253,6 +270,27 @@ uv run jackbot-distill train data/search_targets.jsonl checkpoints/distilled/r1.
 
 Do not resume a checkpoint into a different `hidden_size`; the tensor shapes will
 not match. If changing model width, start a fresh run.
+
+Use `--init-from PATH` for a fresh candidate fork. It copies compatible model
+weights, zero-initializes new feature/critic branches, and starts with a fresh
+optimizer and local counters. Use `--resume PATH` only to continue the same
+architecture and run after interruption.
+
+The first candidate screen compares six equal 13.1M-transition arms:
+
+| Arm | Change |
+| --- | --- |
+| `C` | Corrected base control |
+| `A` | Deterministic post-action board features |
+| `H` | Last eight public actions/cards |
+| `AH` | Both representation additions |
+| `T` | 128-step rollout with longer GAE credit |
+| `V` | Training-only centralized hidden-hand critic |
+
+Each arm starts from the frozen `pzrnunoa` weights, trains against 55% current
+self-play, 40% C0, and 5% heuristic, then receives the same fixed side-swapped
+C0 evaluation. Re-running the launcher resumes the incomplete arm and skips
+validated completed arms.
 
 For long runs, keep the machine plugged in, awake, and on a hard surface with
 real airflow. RL training is sustained CPU load; carpet is not a cooling
@@ -285,6 +323,7 @@ The script folder is intentionally small:
 - `bootstrap.sh`: rebuild/sync the local Python + Rust extension environment
 - `verify.sh`: Rust tests, clippy, and Python tests
 - `train_god.sh`: long champion fine-tune defaults
+- `screen_candidates.sh`: resumable six-arm candidate tournament
 - `resume.sh`: resume `jackbot_latest.pt` or a specific checkpoint
 - `common.sh`: shared environment setup for the other scripts
 
@@ -319,6 +358,6 @@ uv run jackbot-advisor --preset oracle
 ```
 
 The advisor never asks for opponent hands. It tracks visible cards, hand sizes,
-discarded cards, and board state, then samples unknown hands/deck during rollout
-search. Move input uses stable marble labels like `P1m1`, `P2m4`, etc.; command
-prompts accept `undo` and `q`.
+known and unknown discarded cards, reshuffles, and board state, then samples
+unknown hands/deck during rollout search. Move input uses stable marble labels
+like `P1m1`, `P2m4`, etc.; command prompts accept `undo` and `q`.

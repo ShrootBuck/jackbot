@@ -15,6 +15,7 @@ from jackbot.training.config import TrainConfig
 class RunLogger:
     run: Any | None
     started_at: float
+    log_checkpoints: bool = True
     last_steps: int = 0
     last_time: float = 0.0
 
@@ -53,7 +54,7 @@ class RunLogger:
         aliases: list[str],
         metadata: dict[str, Any],
     ) -> None:
-        if self.run is None:
+        if self.run is None or not self.log_checkpoints:
             return
         import wandb
 
@@ -66,23 +67,47 @@ class RunLogger:
         self.run.log_artifact(artifact, aliases=aliases)
 
 
-def make_logger(config: TrainConfig) -> RunLogger:
+def make_logger(config: TrainConfig, initial_steps: int = 0) -> RunLogger:
     if not config.use_wandb:
-        return RunLogger(run=None, started_at=time.perf_counter())
+        return RunLogger(
+            run=None,
+            started_at=time.perf_counter(),
+            log_checkpoints=False,
+            last_steps=initial_steps,
+        )
     import wandb
 
     run = wandb.init(
         project=config.wandb_project,
         mode=config.wandb_mode,
+        id=config.wandb_run_id,
+        resume=config.wandb_resume if config.wandb_run_id else None,
+        name=config.wandb_run_name,
+        group=config.wandb_group,
+        job_type=config.wandb_job_type,
+        tags=config.wandb_tags or None,
         config=config.to_dict(),
     )
     _define_wandb_metrics(run)
-    return RunLogger(run=run, started_at=time.perf_counter())
+    return RunLogger(
+        run=run,
+        started_at=time.perf_counter(),
+        log_checkpoints=config.wandb_log_checkpoints,
+        last_steps=initial_steps,
+    )
 
 
 def _define_wandb_metrics(run: Any) -> None:
     run.define_metric("train/update")
-    for pattern in ("train/*", "arena/*", "opponent/*", "throughput/*", "resources/*", "time/*"):
+    for pattern in (
+        "train/*",
+        "arena/*",
+        "league/*",
+        "opponent/*",
+        "throughput/*",
+        "resources/*",
+        "time/*",
+    ):
         run.define_metric(pattern, step_metric="train/update")
 
 

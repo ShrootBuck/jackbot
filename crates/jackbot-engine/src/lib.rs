@@ -12,6 +12,7 @@ mod rules;
 pub use cards::{Card, Rank, Suit};
 pub use game::{
     ActionKind, Direction, Game, GameError, GameState, LegalAction, MarbleLocation, MarbleState,
-    MoveLeg, NUM_PLAYERS, Observation, ObservedMarble, StepEvents, StepOutcome, Team,
+    MoveLeg, NUM_PLAYERS, Observation, ObservedMarble, PUBLIC_HISTORY_LIMIT, PublicAction,
+    PublicDiscard, StepEvents, StepOutcome, Team,
 };
 pub use rules::{RewardWeights, Rules};

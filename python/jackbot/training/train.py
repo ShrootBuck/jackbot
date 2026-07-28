@@ -9,20 +9,37 @@ from pathlib import Path
 import numpy as np
 import torch
 
-from jackbot.training.checkpoint import load_checkpoint, load_checkpoint_config, save_checkpoint
-from jackbot.training.config import TrainConfig, shaping_scale
+from jackbot.training.checkpoint import (
+    checkpoint_sha256,
+    load_checkpoint,
+    load_checkpoint_config,
+    load_model_weights,
+    restore_rng_state,
+    save_checkpoint,
+)
+from jackbot.training.config import TrainConfig, shaping_scale, union_feature_schemas
 from jackbot.training.env import make_env
 from jackbot.training.league import LeaguePool
 from jackbot.training.logger import make_logger
-from jackbot.training.model import JackbotNet
+from jackbot.training.model import make_model
 from jackbot.training.policies import ModelPolicy, gauntlet_metrics, policy_from_spec, run_gauntlet
 from jackbot.training.ppo import collect_rollout, ppo_update
 from jackbot.training.runtime import training_device
 
 
-def train(config: TrainConfig, resume: Path | None = None) -> None:
+def train(
+    config: TrainConfig,
+    resume: Path | None = None,
+    init_from: Path | None = None,
+) -> None:
+    if resume is not None and init_from is not None:
+        raise ValueError("--resume and --init-from are mutually exclusive")
+    resume_config = None
     if resume is not None:
-        config = _config_for_resume(load_checkpoint_config(resume), config)
+        resume_config = load_checkpoint_config(resume)
+        config = _config_for_resume(resume_config, config)
+    if config.centralized_critic and config.shaping_start != 0.0:
+        raise ValueError("centralized critic requires zero-sum terminal rewards; disable shaping")
 
     random.seed(config.seed)
     np.random.seed(config.seed)
@@ -30,8 +47,26 @@ def train(config: TrainConfig, resume: Path | None = None) -> None:
 
     device = training_device()
     print("Using device: cpu")
-    model = JackbotNet(config.hidden_size).to(device)
-    optimizer = torch.optim.AdamW(model.parameters(), lr=config.lr)
+    model = make_model(config).to(device)
+    if init_from is not None:
+        expected_parent_hash = config.parent_checkpoint_sha256
+        before_hash = checkpoint_sha256(init_from)
+        if expected_parent_hash is not None and before_hash != expected_parent_hash:
+            raise ValueError("warm-start checkpoint hash does not match the requested parent")
+        load_model_weights(init_from, model)
+        config.parent_checkpoint = str(init_from)
+        config.parent_checkpoint_sha256 = checkpoint_sha256(init_from)
+        if config.parent_checkpoint_sha256 != before_hash:
+            raise ValueError("warm-start checkpoint changed while it was being loaded")
+        random.seed(config.seed)
+        np.random.seed(config.seed)
+        torch.manual_seed(config.seed)
+        print(f"Initialized model weights from {init_from}")
+    optimizer = torch.optim.AdamW(
+        model.parameters(),
+        lr=config.lr,
+        weight_decay=config.weight_decay,
+    )
 
     start_update = 0
     global_steps = 0
@@ -39,18 +74,56 @@ def train(config: TrainConfig, resume: Path | None = None) -> None:
     completed_games = 0
     cumulative_winning_team_counts = [0, 0]
     cumulative_winning_move_player_counts = [0, 0, 0, 0]
+    loaded_environment_state = None
+    loaded_rng_state: dict[str, object] = {}
     if resume is not None:
-        _, start_update, global_steps, best_score, completed_games = load_checkpoint(
+        loaded = load_checkpoint(
             resume,
             model,
             optimizer,
+            restore_rng=False,
         )
+        start_update = loaded.update
+        global_steps = loaded.global_steps
+        best_score = loaded.best_score
+        completed_games = loaded.completed_games
+        loaded_environment_state = loaded.environment_state
+        loaded_rng_state = loaded.rng_state
+        cumulative_winning_team_counts = [
+            int(value)
+            for value in loaded.training_state.get("cumulative_winning_team_counts", [0, 0])
+        ]
+        cumulative_winning_move_player_counts = [
+            int(value)
+            for value in loaded.training_state.get(
+                "cumulative_winning_move_player_counts",
+                [0, 0, 0, 0],
+            )
+        ]
+        for group in optimizer.param_groups:
+            group["weight_decay"] = config.weight_decay
+        if resume_config is not None and resume_config.eval_opponents != config.eval_opponents:
+            best_score = float("-inf")
+            print("Evaluation ladder changed; resetting the run-local best score.")
         print(f"Resumed {resume} at update {start_update}, global_steps={global_steps}")
+        if start_update > config.total_updates:
+            raise ValueError(
+                f"checkpoint is at update {start_update}, beyond target {config.total_updates}"
+            )
 
-    env = make_env(config.num_envs, config.seed)
-    batch = env.reset(config.seed)
-    logger = make_logger(config)
     league = LeaguePool(config, device) if config.league_enabled else None
+    environment_schema = union_feature_schemas(
+        config.feature_schema,
+        league.feature_schema if league is not None else "base_v1",
+    )
+    env = make_env(config.num_envs, config.seed, environment_schema)
+    if loaded_environment_state is not None:
+        batch = env.load_state(loaded_environment_state)
+    else:
+        batch = env.reset(config.seed)
+    logger = make_logger(config, initial_steps=global_steps)
+    if loaded_rng_state:
+        restore_rng_state(loaded_rng_state)
     last_checkpoint = time.monotonic()
 
     try:
@@ -110,7 +183,7 @@ def train(config: TrainConfig, resume: Path | None = None) -> None:
                     ModelPolicy("current", model),
                     _arena_opponents(config),
                     config.eval_games,
-                    config.seed + 20_000 + update,
+                    config.eval_seed if config.eval_seed is not None else config.seed + 20_000 + update,
                     device,
                     num_envs=config.eval_num_envs,
                     max_steps_per_game=config.eval_max_steps_per_game,
@@ -131,6 +204,11 @@ def train(config: TrainConfig, resume: Path | None = None) -> None:
                         global_steps,
                         best_score,
                         completed_games,
+                        env.state(),
+                        _training_checkpoint_state(
+                            cumulative_winning_team_counts,
+                            cumulative_winning_move_player_counts,
+                        ),
                     )
                     logger.log_checkpoint(
                         best_path,
@@ -158,6 +236,11 @@ def train(config: TrainConfig, resume: Path | None = None) -> None:
                     global_steps,
                     best_score,
                     completed_games,
+                    env.state(),
+                    _training_checkpoint_state(
+                        cumulative_winning_team_counts,
+                        cumulative_winning_move_player_counts,
+                    ),
                 )
                 logger.log_checkpoint(
                     latest_path,
@@ -181,6 +264,11 @@ def train(config: TrainConfig, resume: Path | None = None) -> None:
                     global_steps,
                     best_score,
                     completed_games,
+                    env.state(),
+                    _training_checkpoint_state(
+                        cumulative_winning_team_counts,
+                        cumulative_winning_move_player_counts,
+                    ),
                 )
                 logger.log_checkpoint(
                     milestone_path,
@@ -193,17 +281,25 @@ def train(config: TrainConfig, resume: Path | None = None) -> None:
 
             metrics["time/update_total_sec"] = time.perf_counter() - update_started
             logger.log(metrics, global_steps)
-    finally:
+    except BaseException:
+        raise
+    else:
         save_checkpoint(
             config.checkpoint_dir / config.latest_name,
             model,
             optimizer,
             config,
-            min(config.total_updates, update + 1 if "update" in locals() else start_update),
+            config.total_updates,
             global_steps,
             best_score,
             completed_games,
+            env.state(),
+            _training_checkpoint_state(
+                cumulative_winning_team_counts,
+                cumulative_winning_move_player_counts,
+            ),
         )
+    finally:
         logger.finish()
 
 
@@ -216,7 +312,13 @@ def parse_args() -> argparse.Namespace:
         default="default",
         help="Training defaults to start from before applying explicit overrides.",
     )
-    parser.add_argument("--resume", type=Path, default=None)
+    initialization = parser.add_mutually_exclusive_group()
+    initialization.add_argument("--resume", type=Path, default=None)
+    initialization.add_argument("--init-from", type=Path, default=None)
+    parser.add_argument("--feature-schema", choices=["base_v1", "a1", "h1", "a1h1"], default=None)
+    parser.add_argument("--centralized-critic", action="store_true")
+    parser.add_argument("--critic-hidden-size", type=int, default=None)
+    parser.add_argument("--seed", type=int, default=None)
     parser.add_argument("--updates", type=int, default=None)
     parser.add_argument("--num-envs", type=int, default=None)
     parser.add_argument("--rollout-len", type=int, default=None)
@@ -226,6 +328,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--gae-lambda", type=float, default=None)
     parser.add_argument("--clip", type=float, default=None)
     parser.add_argument("--lr", type=float, default=None)
+    parser.add_argument("--weight-decay", type=float, default=None)
     parser.add_argument("--hidden-size", type=int, default=None)
     parser.add_argument("--entropy-coef", type=float, default=None)
     parser.add_argument("--value-coef", type=float, default=None)
@@ -237,6 +340,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--no-lr-anneal", action="store_true")
     parser.add_argument("--no-wandb", action="store_true")
     parser.add_argument("--wandb-mode", default=None)
+    parser.add_argument("--wandb-run-id", default=None)
+    parser.add_argument("--wandb-run-name", default=None)
+    parser.add_argument("--wandb-group", default=None)
+    parser.add_argument("--wandb-job-type", default=None)
     parser.add_argument("--checkpoint-dir", type=Path, default=None)
     parser.add_argument("--latest-name", default=None)
     parser.add_argument("--best-name", default=None)
@@ -272,6 +379,14 @@ def config_from_args(args: argparse.Namespace) -> TrainConfig:
         config = TrainConfig.genius()
     else:
         config = TrainConfig()
+    if args.feature_schema is not None:
+        config.feature_schema = args.feature_schema
+    if args.centralized_critic:
+        config.centralized_critic = True
+    if args.critic_hidden_size is not None:
+        config.critic_hidden_size = args.critic_hidden_size
+    if args.seed is not None:
+        config.seed = args.seed
     if args.updates is not None:
         config.total_updates = args.updates
     if args.num_envs is not None:
@@ -290,6 +405,8 @@ def config_from_args(args: argparse.Namespace) -> TrainConfig:
         config.clip = args.clip
     if args.lr is not None:
         config.lr = args.lr
+    if args.weight_decay is not None:
+        config.weight_decay = args.weight_decay
     if args.hidden_size is not None:
         config.hidden_size = args.hidden_size
     if args.entropy_coef is not None:
@@ -312,6 +429,14 @@ def config_from_args(args: argparse.Namespace) -> TrainConfig:
         config.use_wandb = False
     if args.wandb_mode is not None:
         config.wandb_mode = args.wandb_mode
+    if args.wandb_run_id is not None:
+        config.wandb_run_id = args.wandb_run_id
+    if args.wandb_run_name is not None:
+        config.wandb_run_name = args.wandb_run_name
+    if args.wandb_group is not None:
+        config.wandb_group = args.wandb_group
+    if args.wandb_job_type is not None:
+        config.wandb_job_type = args.wandb_job_type
     if args.checkpoint_dir is not None:
         config.checkpoint_dir = args.checkpoint_dir
     if args.latest_name is not None:
@@ -383,7 +508,7 @@ def _config_for_resume(loaded: TrainConfig, requested: TrainConfig) -> TrainConf
 
 def main() -> None:
     args = parse_args()
-    train(config_from_args(args), args.resume)
+    train(config_from_args(args), args.resume, args.init_from)
 
 
 def _learning_rate_for_update(config: TrainConfig, update: int) -> float:
@@ -435,8 +560,31 @@ def _winner_metrics(
     return metrics
 
 
+def _training_checkpoint_state(
+    cumulative_winning_team_counts: list[int],
+    cumulative_winning_move_player_counts: list[int],
+) -> dict[str, object]:
+    return {
+        "cumulative_winning_team_counts": list(cumulative_winning_team_counts),
+        "cumulative_winning_move_player_counts": list(cumulative_winning_move_player_counts),
+    }
+
+
 def _arena_opponents(config: TrainConfig):
-    return [policy_from_spec(spec) for spec in config.eval_opponents]
+    opponents = []
+    for spec in config.eval_opponents:
+        is_parent = (
+            spec not in {"random", "heuristic"}
+            and config.parent_checkpoint is not None
+            and config.parent_checkpoint_sha256 is not None
+            and Path(spec).resolve() == Path(config.parent_checkpoint).resolve()
+        )
+        if is_parent and checkpoint_sha256(Path(spec)) != config.parent_checkpoint_sha256:
+            raise ValueError("evaluation parent checkpoint hash changed")
+        opponents.append(policy_from_spec(spec))
+        if is_parent and checkpoint_sha256(Path(spec)) != config.parent_checkpoint_sha256:
+            raise ValueError("evaluation parent checkpoint changed while loading")
+    return opponents
 
 
 def _checkpoint_metadata(

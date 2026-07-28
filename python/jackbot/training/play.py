@@ -26,6 +26,8 @@ def model_action(model: torch.nn.Module, game: PlayGame, device: torch.device) -
         tensors.action_features,
         tensors.action_offsets,
         deterministic=True,
+        public_history=tensors.public_history,
+        action_consequences=tensors.action_consequences,
     )
     return int(actions[0].item())
 
@@ -39,7 +41,7 @@ def play_game(
     device = training_device()
     model, _ = load_model(checkpoint)
     model.eval()
-    game = PlayGame(seed)
+    game = PlayGame(seed, model.feature_schema)
 
     print(f"Jackbot play | checkpoint: {checkpoint}")
     print(f"You are {TEAM_NAMES[human_team]}; model is {TEAM_NAMES[1 - human_team]}.")

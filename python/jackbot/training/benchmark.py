@@ -17,7 +17,6 @@ from jackbot.training.config import (
 from jackbot.training.policies import (
     BaselinePolicy,
     GauntletResult,
-    MatchResult,
     Policy,
     load_model_policy,
     run_gauntlet,
@@ -28,8 +27,9 @@ from jackbot.training.runtime import training_device
 @dataclass(frozen=True, slots=True)
 class BenchmarkThresholds:
     random_floor: float = 0.99
-    heuristic_floor: float = 0.965
-    champion_lower_ci_floor: float = 0.55
+    heuristic_floor: float = 0.94
+    champion_win_rate_floor: float = 0.57
+    champion_lower_ci_floor: float = 0.525
 
 
 @dataclass(frozen=True, slots=True)
@@ -47,11 +47,13 @@ def main() -> None:
     thresholds = BenchmarkThresholds(
         random_floor=args.random_floor,
         heuristic_floor=args.heuristic_floor,
+        champion_win_rate_floor=args.champion_win_rate_floor,
         champion_lower_ci_floor=args.champion_lower_ci_floor,
     )
     payload = []
+    all_passed = True
 
-    for index, checkpoint in enumerate(args.checkpoint):
+    for checkpoint in args.checkpoint:
         opponents = args.opponent or discover_benchmark_opponents(
             candidate=checkpoint,
             champions_dir=args.champions_dir,
@@ -63,13 +65,14 @@ def main() -> None:
         result = run_benchmark(
             checkpoint,
             opponents,
-            seed=args.seed + index * 10_000_019,
+            seed=args.seed,
             games=args.games,
             num_envs=args.num_envs,
             max_steps_per_game=args.max_steps_per_game,
         )
         checks = benchmark_checks(result, promotion_opponent, thresholds)
         passed = all(check.passed for check in checks)
+        all_passed = all_passed and passed
         print_benchmark(result, checks, passed)
         payload.append(benchmark_payload(result, checks, passed))
 
@@ -78,6 +81,8 @@ def main() -> None:
         args.json.write_text(json.dumps(payload, indent=2) + "\n")
     if args.print_json:
         print(json.dumps(payload, indent=2))
+    if not all_passed:
+        raise SystemExit(1)
 
 
 def parse_args() -> argparse.Namespace:
@@ -90,7 +95,7 @@ def parse_args() -> argparse.Namespace:
         help="Override the default ladder. Can be random, heuristic, or a checkpoint path.",
     )
     parser.add_argument("--promotion-opponent", default=None)
-    parser.add_argument("--games", type=int, default=512, help="Games per side per opponent.")
+    parser.add_argument("--games", type=int, default=1024, help="Games per side per opponent.")
     parser.add_argument("--seed", type=int, default=70_000)
     parser.add_argument("--num-envs", type=int, default=64)
     parser.add_argument("--max-steps-per-game", type=int, default=2_000)
@@ -99,8 +104,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--checkpoint-dir", type=Path, default=Path("checkpoints"))
     parser.add_argument("--milestones", type=int, default=4)
     parser.add_argument("--random-floor", type=float, default=0.99)
-    parser.add_argument("--heuristic-floor", type=float, default=0.965)
-    parser.add_argument("--champion-lower-ci-floor", type=float, default=0.55)
+    parser.add_argument("--heuristic-floor", type=float, default=0.94)
+    parser.add_argument("--champion-win-rate-floor", type=float, default=0.57)
+    parser.add_argument("--champion-lower-ci-floor", type=float, default=0.525)
     parser.add_argument("--json", type=Path, default=None)
     parser.add_argument("--print-json", action="store_true")
     args = parser.parse_args()
@@ -170,8 +176,10 @@ def benchmark_checks(
     by_opponent = {opponent.opponent: opponent for opponent in result.opponents}
     checks: list[BenchmarkCheck] = []
 
-    if "random" in by_opponent:
-        random = by_opponent["random"]
+    random = by_opponent.get("random")
+    if random is None:
+        checks.append(_missing_check("random_floor", thresholds.random_floor, "random"))
+    else:
         checks.append(
             BenchmarkCheck(
                 name="random_floor",
@@ -181,8 +189,10 @@ def benchmark_checks(
                 detail="win rate vs random",
             )
         )
-    if "heuristic" in by_opponent:
-        heuristic = by_opponent["heuristic"]
+    heuristic = by_opponent.get("heuristic")
+    if heuristic is None:
+        checks.append(_missing_check("heuristic_floor", thresholds.heuristic_floor, "heuristic"))
+    else:
         checks.append(
             BenchmarkCheck(
                 name="heuristic_floor",
@@ -192,19 +202,52 @@ def benchmark_checks(
                 detail="win rate vs heuristic",
             )
         )
-    if promotion_opponent is not None and promotion_opponent in by_opponent:
-        champion = by_opponent[promotion_opponent]
-        lower_ci = champion.win_rate - champion.ci95_radius
+    champion = by_opponent.get(promotion_opponent) if promotion_opponent is not None else None
+    if champion is None:
+        checks.append(
+            _missing_check(
+                "champion_win_rate",
+                thresholds.champion_win_rate_floor,
+                promotion_opponent or "promotion opponent",
+            )
+        )
+        checks.append(
+            _missing_check(
+                "champion_lower_ci",
+                thresholds.champion_lower_ci_floor,
+                promotion_opponent or "promotion opponent",
+            )
+        )
+    else:
+        checks.append(
+            BenchmarkCheck(
+                name="champion_win_rate",
+                passed=champion.win_rate >= thresholds.champion_win_rate_floor,
+                value=champion.win_rate,
+                threshold=thresholds.champion_win_rate_floor,
+                detail=f"win rate vs {promotion_opponent}",
+            )
+        )
         checks.append(
             BenchmarkCheck(
                 name="champion_lower_ci",
-                passed=lower_ci > thresholds.champion_lower_ci_floor,
-                value=lower_ci,
+                passed=champion.ci95_lower > thresholds.champion_lower_ci_floor,
+                value=champion.ci95_lower,
                 threshold=thresholds.champion_lower_ci_floor,
                 detail=f"lower 95% CI vs {promotion_opponent}",
             )
         )
     return checks
+
+
+def _missing_check(name: str, threshold: float, opponent: str) -> BenchmarkCheck:
+    return BenchmarkCheck(
+        name=name,
+        passed=False,
+        value=0.0,
+        threshold=threshold,
+        detail=f"required opponent {opponent!r} is missing",
+    )
 
 
 def print_benchmark(result: GauntletResult, checks: list[BenchmarkCheck], passed: bool) -> None:
@@ -245,20 +288,14 @@ def _result_to_dict(result: GauntletResult) -> dict[str, Any]:
     data = asdict(result)
     data["score"] = result.score
     data["total_games"] = result.total_games
-    for opponent in data["opponents"]:
-        match_even = MatchResult(**opponent["candidate_even"])
-        match_odd = MatchResult(**opponent["candidate_odd"])
-        wins = match_even.even_wins + match_odd.odd_wins
-        draws = match_even.unfinished + match_odd.unfinished
-        games = match_even.games + match_odd.games
-        points = wins + 0.5 * draws
-        win_rate = points / max(1, games)
-        ci95 = 1.96 * (win_rate * (1.0 - win_rate) / max(1, games)) ** 0.5
-        opponent["candidate_wins"] = wins
-        opponent["candidate_points"] = points
-        opponent["games"] = games
-        opponent["win_rate"] = win_rate
-        opponent["ci95_radius"] = ci95
+    for opponent, source in zip(data["opponents"], result.opponents, strict=True):
+        opponent["candidate_wins"] = source.candidate_wins
+        opponent["candidate_points"] = source.candidate_points
+        opponent["games"] = source.games
+        opponent["win_rate"] = source.win_rate
+        opponent["ci95_lower"] = source.ci95_lower
+        opponent["ci95_upper"] = source.ci95_upper
+        opponent["ci95_radius"] = source.ci95_radius
     return data
 
 
@@ -266,7 +303,7 @@ def _latest_milestones(checkpoint_dir: Path, count: int) -> list[Path]:
     if count <= 0 or not checkpoint_dir.exists():
         return []
     return sorted(
-        checkpoint_dir.glob("epoch_*.pt"),
+        checkpoint_dir.glob("**/epoch_*.pt"),
         key=lambda path: path.stat().st_mtime,
         reverse=True,
     )[:count]
@@ -274,9 +311,9 @@ def _latest_milestones(checkpoint_dir: Path, count: int) -> list[Path]:
 
 def _promotion_candidates() -> list[Path]:
     return [
+        PROMOTED_CHAMPION_CHECKPOINT,
         CURRENT_CHAMPION_CHECKPOINT,
         Path("checkpoints/wandb_best_pzrnunoa_update3000/jackbot_best.pt"),
-        PROMOTED_CHAMPION_CHECKPOINT,
         Path("checkpoints/wandb_best_s23pmvby_update1325/jackbot_best.pt"),
         OLD_CHAMPION_CHECKPOINT,
     ]

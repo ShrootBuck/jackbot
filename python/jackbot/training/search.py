@@ -11,6 +11,7 @@ import torch
 from jackbot import PlayGame
 from jackbot.training.checkpoint import default_checkpoint_path
 from jackbot.training.env import to_tensors
+from jackbot.training.config import union_feature_schemas
 from jackbot.training.policies import ModelPolicy, Policy, load_model_policy, policy_from_spec
 from jackbot.training.runtime import training_device
 
@@ -39,7 +40,13 @@ def rank_actions(
     tensors = to_tensors(batch, device)
     root_player = int(tensors.current_players[0].item())
     root_team = root_player % 2
-    output = model_policy.model(tensors.obs, tensors.action_features, tensors.action_offsets)
+    output = model_policy.model(
+        tensors.obs,
+        tensors.action_features,
+        tensors.action_offsets,
+        public_history=tensors.public_history,
+        action_consequences=tensors.action_consequences,
+    )
     priors = output.log_probs.exp().detach().cpu().tolist()
     labels = game.legal_action_labels()
     scores = []
@@ -89,7 +96,10 @@ def main() -> None:
     device = training_device()
     model_policy, _ = load_model_policy(checkpoint)
     opponent = model_policy if args.opponent == "self" else policy_from_spec(args.opponent)
-    game = PlayGame(args.seed)
+    game = PlayGame(
+        args.seed,
+        union_feature_schemas(model_policy.feature_schema, opponent.feature_schema),
+    )
     scores = rank_actions(
         game,
         model_policy,
@@ -161,6 +171,9 @@ def example_from_search(
     return {
         "obs": batch["obs"][0].tolist(),
         "action_features": batch["action_features"].tolist(),
+        "public_history": batch["public_history"][0].tolist(),
+        "action_consequences": batch["action_consequences"].tolist(),
+        "feature_schema": batch["feature_schema"],
         "target_probs": target,
         "value": value,
         "best_action": best.action_id if best is not None else None,

@@ -10,9 +10,19 @@ PROMOTED_CHAMPION_CHECKPOINT = CHAMPIONS_DIR / "promoted.pt"
 CURRENT_CHAMPION_CHECKPOINT = CHAMPIONS_DIR / "pzrnunoa_update3000.pt"
 OLD_CHAMPION_CHECKPOINT = CHAMPIONS_DIR / "s23pmvby_update1325.pt"
 
+FEATURE_SCHEMAS: dict[str, tuple[bool, bool]] = {
+    "base_v1": (False, False),
+    "a1": (True, False),
+    "h1": (False, True),
+    "a1h1": (True, True),
+}
+
 
 @dataclass(slots=True)
 class TrainConfig:
+    feature_schema: str = "base_v1"
+    centralized_critic: bool = False
+    critic_hidden_size: int = 256
     seed: int = 1
     num_envs: int = 512
     rollout_len: int = 64
@@ -23,6 +33,7 @@ class TrainConfig:
     gae_lambda: float = 0.95
     clip: float = 0.2
     lr: float = 3e-4
+    weight_decay: float = 0.0
     anneal_lr: bool = True
     entropy_coef: float = 0.01
     value_coef: float = 0.5
@@ -37,8 +48,11 @@ class TrainConfig:
     checkpoint_interval_updates: int = 25
     milestone_interval_updates: int = 50
     checkpoint_interval_seconds: float = 15 * 60
+    parent_checkpoint: str | None = None
+    parent_checkpoint_sha256: str | None = None
     eval_interval_updates: int = 25
     eval_games: int = 64
+    eval_seed: int | None = None
     eval_opponents: list[str] = field(default_factory=lambda: ["random", "heuristic"])
     eval_num_envs: int = 32
     eval_max_steps_per_game: int = 2_000
@@ -54,6 +68,13 @@ class TrainConfig:
     league_deterministic_opponents: bool = True
     wandb_project: str = "jackbot"
     wandb_mode: str = "online"
+    wandb_run_id: str | None = None
+    wandb_run_name: str | None = None
+    wandb_resume: str = "allow"
+    wandb_group: str | None = None
+    wandb_job_type: str | None = None
+    wandb_tags: list[str] = field(default_factory=list)
+    wandb_log_checkpoints: bool = True
     use_wandb: bool = True
 
     @classmethod
@@ -95,22 +116,24 @@ class TrainConfig:
             shaping_start=0.0,
             eval_interval_updates=100,
             eval_games=512,
+            eval_opponents=[str(default_oracle_checkpoint())],
             eval_num_envs=64,
             checkpoint_interval_updates=25,
             milestone_interval_updates=250,
             league_enabled=True,
-            league_baselines=["heuristic", "random"],
+            league_baselines=["heuristic"],
             league_opponents=discover_genius_opponents(),
             league_auto_checkpoints=True,
             league_max_checkpoints=8,
-            league_self_play_weight=1.0,
-            league_baseline_weight=0.5,
-            league_checkpoint_weight=3.0,
+            league_self_play_weight=0.55,
+            league_baseline_weight=0.05,
+            league_checkpoint_weight=0.40,
             league_refresh_interval_updates=25,
             league_deterministic_opponents=False,
         )
 
     def to_dict(self) -> dict[str, object]:
+        validate_feature_schema(self.feature_schema)
         data = asdict(self)
         data["checkpoint_dir"] = str(self.checkpoint_dir)
         return data
@@ -121,13 +144,42 @@ class TrainConfig:
         config.pop("device", None)
         if "checkpoint_dir" in config:
             config["checkpoint_dir"] = Path(str(config["checkpoint_dir"]))
-        return cls(**config)
+        result = cls(**config)
+        validate_feature_schema(result.feature_schema)
+        return result
 
 
 def shaping_scale(config: TrainConfig, update: int) -> float:
     decay_updates = max(1, int(config.total_updates * config.shaping_decay_fraction))
     progress = min(1.0, update / decay_updates)
     return config.shaping_start * (1.0 - progress)
+
+
+def feature_flags(schema: str) -> tuple[bool, bool]:
+    validate_feature_schema(schema)
+    return FEATURE_SCHEMAS[schema]
+
+
+def union_feature_schemas(*schemas: str) -> str:
+    action_consequences = False
+    public_history = False
+    for schema in schemas:
+        use_actions, use_history = feature_flags(schema)
+        action_consequences = action_consequences or use_actions
+        public_history = public_history or use_history
+    if action_consequences and public_history:
+        return "a1h1"
+    if action_consequences:
+        return "a1"
+    if public_history:
+        return "h1"
+    return "base_v1"
+
+
+def validate_feature_schema(schema: str) -> None:
+    if schema not in FEATURE_SCHEMAS:
+        choices = ", ".join(FEATURE_SCHEMAS)
+        raise ValueError(f"unknown feature schema {schema!r}; expected one of {choices}")
 
 
 def discover_genius_opponents(

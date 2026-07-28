@@ -25,6 +25,8 @@ class Rollout:
     old_log_probs: torch.Tensor
     old_values: torch.Tensor
     belief_targets: torch.Tensor
+    public_history: torch.Tensor
+    action_consequences: torch.Tensor
     returns: torch.Tensor
     advantages: torch.Tensor
     team_rewards: torch.Tensor
@@ -69,6 +71,8 @@ def collect_rollout(
     env_step_sec = 0.0
     obs_parts: list[torch.Tensor] = []
     belief_parts: list[torch.Tensor] = []
+    history_parts: list[torch.Tensor] = []
+    action_consequence_parts: list[torch.Tensor] = []
     action_feature_parts: list[torch.Tensor] = []
     offset_parts: list[torch.Tensor] = []
     actions_parts: list[torch.Tensor] = []
@@ -114,6 +118,8 @@ def collect_rollout(
 
         obs_parts.append(tensors.obs)
         belief_parts.append(tensors.belief_targets)
+        history_parts.append(tensors.public_history)
+        action_consequence_parts.append(tensors.action_consequences)
         action_feature_parts.append(tensors.action_features)
         offset_parts.append(tensors.action_offsets)
         actions_parts.append(actions)
@@ -134,10 +140,10 @@ def collect_rollout(
     tensor_transfer_sec += time.perf_counter() - transfer_started
     with torch.no_grad():
         action_started = time.perf_counter()
-        final_output = model(
+        final_values = model.value(
             final_tensors.obs,
-            final_tensors.action_features,
-            final_tensors.action_offsets,
+            public_history=final_tensors.public_history,
+            privileged_hands=final_tensors.belief_targets,
         )
         policy_action_sec += time.perf_counter() - action_started
 
@@ -145,7 +151,9 @@ def collect_rollout(
     rollout = _assemble_rollout(
         obs_parts,
         belief_parts,
+        history_parts,
         action_feature_parts,
+        action_consequence_parts,
         offset_parts,
         actions_parts,
         log_prob_parts,
@@ -157,20 +165,30 @@ def collect_rollout(
         winning_move_player_parts,
         acting_team_parts,
         learn_mask_parts,
-        final_output.values,
+        final_values,
         torch.remainder(final_tensors.current_players, 2),
         config.gamma,
         config.gae_lambda,
     )
     assemble_sec = time.perf_counter() - assemble_started
-    return rollout, batch, {
+    metrics = {
         "time/rollout_collect_sec": time.perf_counter() - started_at,
         "time/tensor_transfer_sec": tensor_transfer_sec,
         "time/policy_action_sec": policy_action_sec,
         "time/action_to_cpu_sec": action_to_cpu_sec,
         "time/env_step_sec": env_step_sec,
         "time/rollout_assemble_sec": assemble_sec,
+        "league/learner_row_fraction": float(rollout.learn_mask.float().mean().item()),
     }
+    if assignments is not None:
+        metrics["league/self_play_fraction"] = float(assignments.self_play.float().mean().item())
+        if league is not None:
+            for index, name in enumerate(league.names):
+                key = name.replace("/", "_")
+                metrics[f"league/{key}_fraction"] = float(
+                    (assignments.opponent_indices == index).float().mean().item()
+                )
+    return rollout, batch, metrics
 
 
 def ppo_update(
@@ -194,6 +212,9 @@ def ppo_update(
                 mb.action_features,
                 mb.action_offsets,
                 mb.actions,
+                public_history=mb.public_history,
+                action_consequences=mb.action_consequences,
+                privileged_hands=mb.belief_targets,
             )
             ratio = (new_log_probs - mb.old_log_probs).exp()
             unclipped = ratio * mb.advantages
@@ -267,7 +288,9 @@ def ppo_update(
 def _assemble_rollout(
     obs_parts: list[torch.Tensor],
     belief_parts: list[torch.Tensor],
+    history_parts: list[torch.Tensor],
     action_feature_parts: list[torch.Tensor],
+    action_consequence_parts: list[torch.Tensor],
     offset_parts: list[torch.Tensor],
     actions_parts: list[torch.Tensor],
     log_prob_parts: list[torch.Tensor],
@@ -288,6 +311,7 @@ def _assemble_rollout(
     device = obs_parts[0].device
     obs = torch.cat(obs_parts, dim=0)
     belief_targets = torch.cat(belief_parts, dim=0)
+    public_history = torch.cat(history_parts, dim=0)
     actions = torch.cat(actions_parts, dim=0)
     old_log_probs = torch.cat(log_prob_parts, dim=0)
     old_values = torch.cat(value_parts, dim=0)
@@ -315,6 +339,7 @@ def _assemble_rollout(
     advantages = _normalize_advantages(advantages, learn_mask)
 
     action_features, action_offsets = _concat_action_segments(action_feature_parts, offset_parts)
+    action_consequences = torch.cat(action_consequence_parts, dim=0)
     starts = action_offsets[:-1]
     ends = action_offsets[1:]
     assert obs.shape[0] == env_count * len(obs_parts)
@@ -327,6 +352,8 @@ def _assemble_rollout(
         old_log_probs=old_log_probs,
         old_values=old_values,
         belief_targets=belief_targets,
+        public_history=public_history,
+        action_consequences=action_consequences,
         returns=returns,
         advantages=advantages,
         team_rewards=team_rewards,
@@ -429,6 +456,15 @@ def _slice_rollout(rollout: Rollout, rows: torch.Tensor) -> Rollout:
         old_log_probs=rollout.old_log_probs[rows],
         old_values=rollout.old_values[rows],
         belief_targets=rollout.belief_targets[rows],
+        public_history=rollout.public_history[rows],
+        action_consequences=torch.cat(
+            [rollout.action_consequences[start:end] for start, end in zip(
+                rollout.action_starts[rows].tolist(),
+                rollout.action_ends[rows].tolist(),
+                strict=True,
+            )],
+            dim=0,
+        ),
         returns=rollout.returns[rows],
         advantages=rollout.advantages[rows],
         team_rewards=rollout.team_rewards,
