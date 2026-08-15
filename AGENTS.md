@@ -26,3 +26,22 @@ table-play usability.
   random/heuristic charts, since those are nearly saturated.
 - Generated checkpoints, W&B downloads, datasets, and benchmark JSON belong out
   of git unless explicitly requested.
+
+## Live Table Agent Interface
+
+When Zayd narrates a live game, do not open or preserve an interactive TTY.
+Use the persistent one-shot interface in `./scripts/agent_play.sh`:
+
+- `new --seat P1 --hand "AS KD 7H 4C"` starts a game.
+- `status` reads the current state.
+- `moves --card 5H` lists interpretations of an opponent's revealed move.
+- `observe --card 5H --move 2` records the selected interpretation and exits.
+- `advise` runs God-search when it is Zayd's turn.
+- `observe --id 17` records the move Zayd actually made.
+- `hand "AS KD 7H 4C"` records Zayd's cards after a new deal.
+- `undo` repairs the last incorrectly recorded move.
+
+Every mutating command saves to `.jackbot-agent.json`. Run `moves` before
+`observe` when a narration could map to multiple legal actions; never guess
+which marble moved. `--json` before the subcommand is available for structured
+agent output.

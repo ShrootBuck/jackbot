@@ -6,13 +6,18 @@ import torch
 from jackbot import PlayGame
 from jackbot.training.advisor import (
     AdvisorSession,
+    QuitAdvisor,
     advisor_checkpoint,
     apply_advisor_preset,
     apply_action,
     card_label,
+    effective_search_samples,
+    ensure_current_hand,
     legal_action_details,
+    load_session,
     parse_card,
     parse_cards,
+    prompt_startup,
     rank_advisor_actions,
     sample_hidden_state,
     validate_session_card_counts,
@@ -36,6 +41,24 @@ def test_session_json_round_trip() -> None:
     restored = AdvisorSession.from_dict(session.to_dict())
 
     assert restored.to_dict() == session.to_dict()
+
+
+def test_startup_prompt_accepts_quit(monkeypatch) -> None:
+    monkeypatch.setattr("builtins.input", lambda _label: "q")
+
+    with pytest.raises(QuitAdvisor):
+        prompt_startup("start: ")
+
+
+def test_updated_hand_is_saved_before_search(monkeypatch, tmp_path) -> None:
+    path = tmp_path / "session.json"
+    session = AdvisorSession.new(0)
+    session.my_hand = parse_cards("AS KD 7H 4C")
+    monkeypatch.setattr("builtins.input", lambda _label: "2S 3D 5H 9C")
+
+    ensure_current_hand(session, path)
+
+    assert load_session(path).my_hand == parse_cards("2S 3D 5H 9C")
 
 
 def test_old_session_infers_unknown_discard_count() -> None:
@@ -104,6 +127,46 @@ def test_advisor_ranking_shape() -> None:
     assert recommendations[0].label
 
 
+def test_advisor_ranking_is_reproducible_without_consuming_global_rng() -> None:
+    session = AdvisorSession.new(0)
+    session.my_hand = parse_cards("AS KD 7H 4C")
+    session.hand_sizes[0] = 4
+    policy = ModelPolicy("tiny", JackbotNet(hidden_size=32))
+    rng_before = torch.get_rng_state()
+
+    first = rank_advisor_actions(
+        session, policy, torch.device("cpu"), 2, 1, 2, seed=71
+    )
+    second = rank_advisor_actions(
+        session, policy, torch.device("cpu"), 2, 1, 2, seed=71
+    )
+
+    assert first == second
+    assert torch.equal(torch.get_rng_state(), rng_before)
+
+
+def test_forced_advisor_action_skips_rollouts() -> None:
+    session = AdvisorSession.new(0)
+    session.hand_sizes[0] = 0
+    session.deck_remaining = 40
+    model = JackbotNet(hidden_size=32)
+    policy = ModelPolicy("tiny", model)
+
+    recommendations = rank_advisor_actions(
+        session,
+        policy,
+        torch.device("cpu"),
+        samples=2,
+        rollouts_per_sample=3,
+        max_steps=20,
+        seed=7,
+    )
+
+    assert len(recommendations) == 1
+    assert recommendations[0].rollouts == 0
+    assert recommendations[0].score == 0.5
+
+
 def test_oracle_preset_sets_heavier_defaults_and_oracle_checkpoint(monkeypatch, tmp_path) -> None:
     promoted = tmp_path / "promoted.pt"
     promoted.write_bytes(b"checkpoint")
@@ -126,9 +189,9 @@ def test_oracle_preset_sets_heavier_defaults_and_oracle_checkpoint(monkeypatch, 
 
     apply_advisor_preset(args)
 
-    assert args.samples == 64
-    assert args.rollouts_per_sample == 4
-    assert args.max_steps == 700
+    assert args.samples == 128
+    assert args.rollouts_per_sample == 2
+    assert args.max_steps == 64
     assert advisor_checkpoint(args) == promoted
 
 
@@ -148,8 +211,34 @@ def test_advisor_manual_overrides_survive_preset() -> None:
     apply_advisor_preset(args)
 
     assert args.samples == 8
-    assert args.rollouts_per_sample == 4
+    assert args.rollouts_per_sample == 2
     assert args.max_steps == 50
+
+
+def test_god_preset_spends_more_test_time_compute() -> None:
+    args = type(
+        "Args",
+        (),
+        {
+            "preset": "god",
+            "checkpoint": None,
+            "samples": None,
+            "rollouts_per_sample": None,
+            "max_steps": None,
+        },
+    )()
+
+    apply_advisor_preset(args)
+
+    assert args.samples == 512
+    assert args.rollouts_per_sample == 2
+    assert args.max_steps == 128
+
+
+def test_search_samples_adapt_only_to_pathological_branching() -> None:
+    assert effective_search_samples(512, 2, 1) == 1
+    assert effective_search_samples(512, 2, 30) == 512
+    assert effective_search_samples(512, 2, 152) == 107
 
 
 def test_unknown_skip_discard_is_removed_from_hidden_state() -> None:

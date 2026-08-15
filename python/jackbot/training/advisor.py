@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import random
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -14,11 +15,12 @@ from jackbot.training.checkpoint import default_checkpoint_path
 from jackbot.training.config import default_oracle_checkpoint
 from jackbot.training.policies import ModelPolicy, load_model_policy
 from jackbot.training.runtime import training_device
-from jackbot.training.search import rank_actions
+from jackbot.training.search import rank_action_groups
 
 
 NUM_PLAYERS = 4
 MARBLES_PER_PLAYER = 4
+MAX_TOTAL_SEARCH_ROLLOUTS = 32_768
 HAND_CYCLE = (4, 4, 5)
 FULL_DECK = list(range(52))
 RANK_LABELS = ("A", "2", "3", "4", "5", "6", "7", "8", "9", "10", "J", "Q", "K")
@@ -69,8 +71,10 @@ class AdvisorPreset:
 
 
 ADVISOR_PRESETS = {
-    "default": AdvisorPreset(samples=16, rollouts_per_sample=2, max_steps=400),
-    "oracle": AdvisorPreset(samples=64, rollouts_per_sample=4, max_steps=700),
+    "default": AdvisorPreset(samples=32, rollouts_per_sample=2, max_steps=64),
+    "oracle": AdvisorPreset(samples=128, rollouts_per_sample=2, max_steps=64),
+    "god": AdvisorPreset(samples=512, rollouts_per_sample=2, max_steps=128),
+    "deep": AdvisorPreset(samples=64, rollouts_per_sample=4, max_steps=700),
 }
 
 
@@ -387,20 +391,52 @@ def rank_advisor_actions(
     max_steps: int,
     seed: int,
 ) -> list[AdvisorRecommendation]:
+    rng_state = torch.get_rng_state()
+    try:
+        torch.manual_seed(seed)
+        return _rank_advisor_actions(
+            session,
+            model_policy,
+            device,
+            samples,
+            rollouts_per_sample,
+            max_steps,
+            seed,
+        )
+    finally:
+        torch.set_rng_state(rng_state)
+
+
+def _rank_advisor_actions(
+    session: AdvisorSession,
+    model_policy: ModelPolicy,
+    device: torch.device,
+    samples: int,
+    rollouts_per_sample: int,
+    max_steps: int,
+    seed: int,
+) -> list[AdvisorRecommendation]:
     aggregates: dict[int, dict[str, Any]] = {}
+    games: list[PlayGame] = []
+    details_by_sample: list[dict[int, dict[str, Any]]] = []
     for sample_index in range(samples):
         state = sample_hidden_state(session, seed + sample_index * 100_003)
         game = PlayGame.from_state(state, model_policy.feature_schema)
-        details = {int(item["id"]): dict(item) for item in game.legal_action_details()}
-        scores = rank_actions(
-            game,
-            model_policy,
-            model_policy,
-            device,
-            rollouts=rollouts_per_sample,
-            max_steps=max_steps,
-            rollout_deterministic=False,
+        games.append(game)
+        details_by_sample.append(
+            {int(item["id"]): dict(item) for item in game.legal_action_details()}
         )
+
+    grouped_scores = rank_action_groups(
+        games,
+        model_policy,
+        model_policy,
+        device,
+        rollouts=rollouts_per_sample,
+        max_steps=max_steps,
+        rollout_deterministic=False,
+    )
+    for details, scores in zip(details_by_sample, grouped_scores, strict=True):
         for score in scores:
             aggregate = aggregates.setdefault(
                 score.action_id,
@@ -408,12 +444,16 @@ def rank_advisor_actions(
                     "label": stable_detail_label(details[score.action_id]),
                     "prior_sum": 0.0,
                     "prior_count": 0,
+                    "score_sum": 0.0,
+                    "score_count": 0,
                     "wins": 0.0,
                     "rollouts": 0,
                 },
             )
             aggregate["prior_sum"] += score.prior
             aggregate["prior_count"] += 1
+            aggregate["score_sum"] += score.score
+            aggregate["score_count"] += 1
             aggregate["wins"] += score.wins
             aggregate["rollouts"] += score.rollouts
 
@@ -422,7 +462,11 @@ def rank_advisor_actions(
             action_id=action_id,
             label=data["label"],
             prior=data["prior_sum"] / max(1, data["prior_count"]),
-            score=data["wins"] / max(1, data["rollouts"]),
+            score=(
+                data["wins"] / data["rollouts"]
+                if data["rollouts"]
+                else data["score_sum"] / max(1, data["score_count"])
+            ),
             wins=data["wins"],
             rollouts=data["rollouts"],
         )
@@ -721,22 +765,32 @@ def prompt_optional_card(label: str, session: AdvisorSession, session_path: Path
 
 def prompt_seat() -> int:
     while True:
-        raw = input("Your seat (P1-P4): ").strip()
+        raw = prompt_startup("Your seat (P1-P4): ")
         try:
             return parse_seat(raw)
         except (ValueError, TypeError) as error:
             print(error)
 
 
+def prompt_startup(label: str) -> str:
+    try:
+        raw = input(label).strip()
+    except EOFError as exc:
+        raise QuitAdvisor from exc
+    if raw.lower() in {"q", "quit", "exit"}:
+        raise QuitAdvisor
+    return raw
+
+
 def create_or_resume_session(path: Path) -> AdvisorSession:
     if path.exists():
-        raw = input(f"Resume {path}? [Y/n] ").strip().lower()
+        raw = prompt_startup(f"Resume {path}? [Y/n] ").lower()
         if raw not in {"n", "no"}:
             return load_session(path)
 
     user_seat = prompt_seat()
     session = AdvisorSession.new(user_seat)
-    hand = parse_cards(input("Your current hand: ").strip())
+    hand = parse_cards(prompt_startup("Your current hand: "))
     session.my_hand = hand
     session.hand_sizes[user_seat] = len(hand)
     save_session(path, session)
@@ -759,15 +813,21 @@ def ensure_current_hand(session: AdvisorSession, session_path: Path) -> None:
     else:
         session.my_hand = parse_cards(raw)
     session.hand_sizes[session.user_seat] = len(session.my_hand)
+    save_session(session_path, session)
 
 
 def print_recommendations(recommendations: list[AdvisorRecommendation], top: int) -> None:
     print("Advice:")
     for rank, recommendation in enumerate(recommendations[:top], start=1):
+        evidence = (
+            f"points={recommendation.wins:g}/{recommendation.rollouts}"
+            if recommendation.rollouts
+            else "forced"
+        )
         print(
             f"  {rank:>2}. score={recommendation.score:.3f} "
             f"prior={recommendation.prior:.3f} "
-            f"wins={recommendation.wins:g}/{recommendation.rollouts} "
+            f"{evidence} "
             f"id={recommendation.action_id}: {recommendation.label}"
         )
 
@@ -800,24 +860,45 @@ def handle_user_turn(
     args: argparse.Namespace,
 ) -> None:
     ensure_current_hand(session, args.session)
+    details = {
+        int(item["id"]): dict(item)
+        for item in legal_action_details(session, None, args.seed + session.turn_index)
+    }
+    samples = effective_search_samples(
+        args.samples,
+        args.rollouts_per_sample,
+        len(details),
+    )
+    rollout_count = samples * args.rollouts_per_sample
+    if len(details) <= 1:
+        print("Checking forced move...", flush=True)
+    else:
+        print(
+            f"Thinking ({rollout_count} rollouts per legal move, "
+            f"{args.max_steps}-ply value search)...",
+            flush=True,
+        )
+    if samples < args.samples:
+        print(
+            f"Adaptive branch cap: {len(details)} legal moves, "
+            f"using {samples}/{args.samples} hidden samples."
+        )
+    search_started = time.perf_counter()
     recommendations = rank_advisor_actions(
         session,
         model_policy,
         device,
-        samples=args.samples,
+        samples=samples,
         rollouts_per_sample=args.rollouts_per_sample,
         max_steps=args.max_steps,
         seed=args.seed + session.turn_index * 1_000_003,
     )
+    print(f"Search finished in {time.perf_counter() - search_started:.1f}s.")
     if not recommendations:
         print("No legal recommendations.")
         return
 
     print_recommendations(recommendations, args.top)
-    details = {
-        int(item["id"]): dict(item)
-        for item in legal_action_details(session, None, args.seed + session.turn_index)
-    }
     while True:
         raw = prompt_checked(
             "Apply [Enter=#1, rank number, `id N`, `l`, `undo`, `q`]: ",
@@ -864,6 +945,19 @@ def handle_user_turn(
     )
     print(outcome)
     save_session(args.session, session)
+
+
+def effective_search_samples(
+    requested_samples: int,
+    rollouts_per_sample: int,
+    legal_actions: int,
+) -> int:
+    if requested_samples <= 0 or rollouts_per_sample <= 0:
+        raise ValueError("search samples and rollouts must be positive")
+    if legal_actions <= 1:
+        return 1
+    per_sample = max(1, legal_actions) * rollouts_per_sample
+    return max(1, min(requested_samples, MAX_TOTAL_SEARCH_ROLLOUTS // per_sample))
 
 
 def handle_observed_turn(session: AdvisorSession, args: argparse.Namespace) -> None:
@@ -978,7 +1072,7 @@ def apply_advisor_preset(args: argparse.Namespace) -> argparse.Namespace:
 def advisor_checkpoint(args: argparse.Namespace) -> Path:
     if args.checkpoint is not None:
         return args.checkpoint
-    if args.preset == "oracle":
+    if args.preset in {"oracle", "god"}:
         return default_oracle_checkpoint()
     return default_checkpoint_path()
 
@@ -988,20 +1082,27 @@ def main() -> None:
     checkpoint = advisor_checkpoint(args)
     device = training_device()
     model_policy, _ = load_model_policy(checkpoint)
-    session = create_or_resume_session(args.session)
-
-    print("Jackbot advisor. Commands inside prompts: `undo`, `q`.")
-    while session.winner is None:
-        try:
-            print_session_summary(session)
-            if session.current_player == session.user_seat:
-                handle_user_turn(session, model_policy, device, args)
-            else:
-                handle_observed_turn(session, args)
-        except RestartTurn:
-            continue
-        except ValueError as error:
-            print(error)
+    print(f"Jackbot advisor | model={checkpoint} | preset={args.preset}")
+    print("Commands inside prompts: `undo`, `q`.")
+    try:
+        session = create_or_resume_session(args.session)
+        while session.winner is None:
+            try:
+                print_session_summary(session)
+                if session.current_player == session.user_seat:
+                    handle_user_turn(session, model_policy, device, args)
+                else:
+                    handle_observed_turn(session, args)
+            except RestartTurn:
+                continue
+            except ValueError as error:
+                print(error)
+    except (QuitAdvisor, KeyboardInterrupt):
+        if args.session.exists():
+            print(f"Session saved to {args.session}.")
+        else:
+            print("Advisor exited.")
+        return
 
     print(f"Game over. Winner: {team_label(int(session.winner))}")
 

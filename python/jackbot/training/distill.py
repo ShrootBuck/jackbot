@@ -11,7 +11,7 @@ import torch
 import torch.nn.functional as F
 
 from jackbot import PlayGame
-from jackbot.training.checkpoint import save_checkpoint
+from jackbot.training.checkpoint import checkpoint_sha256, save_checkpoint
 from jackbot.training.config import TrainConfig, union_feature_schemas
 from jackbot.training.env import to_tensors
 from jackbot.training.model import make_model
@@ -46,6 +46,7 @@ def main() -> None:
     train.add_argument("--batch-size", type=int, default=64)
     train.add_argument("--lr", type=float, default=1e-4)
     train.add_argument("--value-coef", type=float, default=0.25)
+    train.add_argument("--seed", type=int, default=1)
     args = parser.parse_args()
 
     if args.command == "collect":
@@ -99,6 +100,8 @@ def collect_targets(args: argparse.Namespace) -> None:
 
 
 def train_distillation(args: argparse.Namespace) -> None:
+    random.seed(args.seed)
+    torch.manual_seed(args.seed)
     device = training_device()
     examples = _read_examples(args.input)
     if not examples:
@@ -114,9 +117,12 @@ def train_distillation(args: argparse.Namespace) -> None:
                 f"examples use {feature_schema}, base checkpoint uses {config.feature_schema}"
             )
         model = base_policy.model
+        config.parent_checkpoint = str(args.base_checkpoint.resolve())
+        config.parent_checkpoint_sha256 = checkpoint_sha256(args.base_checkpoint)
     else:
         config = TrainConfig(hidden_size=args.hidden_size, feature_schema=feature_schema)
         model = make_model(config).to(device)
+    config.seed = args.seed
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=config.weight_decay)
 
     for epoch in range(args.epochs):

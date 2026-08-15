@@ -100,7 +100,7 @@ Run the guided real-game advisor:
 
 ```bash
 uv run jackbot-advisor
-uv run jackbot-screen --dry-run
+./scripts/play_tonight.sh
 ```
 
 Play against a checkpoint:
@@ -324,6 +324,8 @@ The script folder is intentionally small:
 - `verify.sh`: Rust tests, clippy, and Python tests
 - `train_god.sh`: long champion fine-tune defaults
 - `screen_candidates.sh`: resumable six-arm candidate tournament
+- `play_tonight.sh`: launch the strongest promoted model with God-search advice
+- `agent_play.sh`: persistent one-shot table commands for coding agents
 - `resume.sh`: resume `jackbot_latest.pt` or a specific checkpoint
 - `common.sh`: shared environment setup for the other scripts
 
@@ -345,19 +347,59 @@ rebuilt for the current Mac.
 
 `jackbot-advisor` is the practical hidden-info table workflow. It asks for your
 seat and hand, prompts for each revealed card and visible move, auto-saves to
-`.jackbot-advisor.json`, and recommends moves from sampled hidden states:
+`.jackbot-advisor.json`, and recommends moves from sampled hidden states. For
+table play, use the shipped launcher:
 
 ```bash
-uv run jackbot-advisor --samples 16 --rollouts-per-sample 2
+./scripts/play_tonight.sh
 ```
 
-For slower but stronger table advice, use the oracle preset:
+The table launcher uses the `god` preset: 512 hidden-card determinizations with
+two policy trajectories per legal move. Rollouts are evaluated in ragged
+batches and use the learned value at a 128-ply cutoff, so the extra test-time
+compute goes into broad hidden-world coverage instead of playing a few sampled
+games all the way to completion. Pathological split-7 positions are capped at
+32,768 total root trajectories so the branching factor cannot make the table
+tool unusable. The lighter presets and the old
+deep-completion mode remain available:
 
 ```bash
+uv run jackbot-advisor
 uv run jackbot-advisor --preset oracle
+uv run jackbot-advisor --preset deep
 ```
 
 The advisor never asks for opponent hands. It tracks visible cards, hand sizes,
 known and unknown discarded cards, reshuffles, and board state, then samples
 unknown hands/deck during rollout search. Move input uses stable marble labels
-like `P1m1`, `P2m4`, etc.; command prompts accept `undo` and `q`.
+like `P1m1`, `P2m4`, etc.; command prompts accept `undo` and `q`. Quitting
+keeps the auto-saved session for a later resume.
+
+### Non-interactive agent play
+
+`agent_play.sh` provides the same synced game state without keeping a TTY
+alive. Each invocation loads `.jackbot-agent.json`, performs one operation,
+saves when needed, prints the result, and exits:
+
+```bash
+# Once, at the start of the game:
+./scripts/agent_play.sh new --seat P1 --hand "AS KD 7H 4C"
+
+# Record an opponent turn. First list legal interpretations; then select one.
+./scripts/agent_play.sh moves --card 5H
+./scripts/agent_play.sh observe --card 5H --move 2
+
+# On your turn, get God-search advice, then record what you actually played.
+./scripts/agent_play.sh advise
+./scripts/agent_play.sh observe --id 17
+
+# Other state operations:
+./scripts/agent_play.sh status
+./scripts/agent_play.sh hand "AS KD 7H 4C"
+./scripts/agent_play.sh undo
+```
+
+Put `--json` before the subcommand for compact machine-readable output.
+`JACKBOT_AGENT_SESSION`, `JACKBOT_AGENT_CHECKPOINT`, and
+`JACKBOT_AGENT_PRESET` override the wrapper defaults. `new --force` is the
+explicit way to replace an existing saved game.

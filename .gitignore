@@ -1,5 +1,8 @@
 /target/
 /.venv/
+/.jackbot-advisor.json
+/.jackbot-agent.json
+/wandb/
 __pycache__/
 .pytest_cache/
 *.so
